@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Unit and integration tests
+        run: cargo test --workspace
+
+      # The macOS input backend can be type checked from any host, which is what
+      # keeps it from rotting on a Windows-only machine.
+      - name: Type check the macOS input backend
+        if: runner.os != 'macOS'
+        run: cargo check -p ud-input --features parse-check-macos
+
+      - name: Build the application
+        run: cargo build --release -p uniondesk
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      # Advisory for now: the tree has not been through rustfmt or clippy yet, so
+      # these report without failing the build. Remove the two continue-on-error
+      # lines once the first run is clean.
+      - name: Formatting
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets -- -D warnings

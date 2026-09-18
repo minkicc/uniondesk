@@ -1,0 +1,10 @@
+/target
+**/target
+**/node_modules
+**/dist
+**/gen/schemas
+*.pdb
+*.log
+.DS_Store
+/.idea
+/.vscode

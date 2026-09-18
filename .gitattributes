@@ -1,0 +1,10 @@
+# Keep the working tree consistent across Windows and macOS.
+* text=auto eol=lf
+
+# Binary assets must never be line ending converted.
+*.png binary
+*.ico binary
+*.icns binary
+
+# Lockfiles are generated but worth reviewing; leave them alone.
+Cargo.lock linguist-generated

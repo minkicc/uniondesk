@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>UnionDesk</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <h1>UnionDesk</h1>
+            <p id="device-summary" class="muted">Starting…</p>
+          </div>
+        </div>
+
+        <div class="topbar-actions">
+          <div id="control-badge" class="badge badge-idle" role="status">Local input</div>
+          <button id="release-control" class="button button-warn hidden" type="button">
+            Release control
+          </button>
+          <button id="sharing-toggle" class="button" type="button" aria-pressed="false">
+            Sharing off
+          </button>
+        </div>
+      </header>
+
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="devices" role="tab" type="button">Devices</button>
+        <button class="tab" data-tab="transfers" role="tab" type="button">
+          Transfers <span id="transfer-count" class="pill hidden">0</span>
+        </button>
+        <button class="tab" data-tab="settings" role="tab" type="button">Settings</button>
+      </nav>
+
+      <main>
+        <section id="panel-devices" class="panel active">
+          <div class="callout" id="permission-callout"></div>
+
+          <div class="section-header">
+            <h2>This machine</h2>
+          </div>
+          <div id="self-card" class="card self-card"></div>
+
+          <div class="section-header">
+            <h2>Other machines</h2>
+            <div class="section-actions">
+              <button id="add-by-address" class="button button-quiet" type="button">
+                Add by address
+              </button>
+              <button id="rescan" class="button button-quiet" type="button">Rescan</button>
+            </div>
+          </div>
+          <div id="device-list" class="device-list"></div>
+          <p id="device-empty" class="empty hidden">
+            No other machines yet. Start UnionDesk on a second computer on the same network
+            and it will appear here within a few seconds.
+          </p>
+        </section>
+
+        <section id="panel-transfers" class="panel">
+          <div class="section-header">
+            <h2>File transfers</h2>
+            <div class="section-actions">
+              <button id="open-downloads" class="button button-quiet" type="button">
+                Open download folder
+              </button>
+              <button id="clear-transfers" class="button button-quiet" type="button">
+                Clear finished
+              </button>
+            </div>
+          </div>
+          <div id="transfer-list" class="transfer-list"></div>
+          <p id="transfer-empty" class="empty">
+            Drag files onto this window, or use “Send files” on a device to start a transfer.
+          </p>
+        </section>
+
+        <section id="panel-settings" class="panel">
+          <form id="settings-form" class="settings"></form>
+          <div class="settings-footer">
+            <button id="save-settings" class="button button-primary" type="button">
+              Save settings
+            </button>
+            <span id="settings-status" class="muted"></span>
+          </div>
+          <div class="section-header"><h2>Notes for this platform</h2></div>
+          <ul id="platform-notes" class="notes"></ul>
+        </section>
+      </main>
+    </div>
+
+    <div id="pairing-modal" class="modal hidden" role="dialog" aria-modal="true">
+      <div class="modal-body">
+        <h2 id="pairing-title">Pairing</h2>
+        <p id="pairing-text" class="muted"></p>
+        <div id="pairing-code-block" class="code-block hidden">
+          <span id="pairing-code"></span>
+        </div>
+        <input
+          id="pairing-input"
+          class="input hidden"
+          inputmode="numeric"
+          autocomplete="off"
+          maxlength="7"
+          placeholder="6 digit code"
+        />
+        <p id="pairing-fingerprint" class="fingerprint"></p>
+        <div class="modal-actions">
+          <button id="pairing-cancel" class="button button-quiet" type="button">Cancel</button>
+          <button id="pairing-accept" class="button button-primary" type="button">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="address-modal" class="modal hidden" role="dialog" aria-modal="true">
+      <div class="modal-body">
+        <h2>Connect by address</h2>
+        <p class="muted">
+          Useful when multicast is blocked. Enter an IPv4 address, optionally with a port;
+          the default port is used otherwise.
+        </p>
+        <input id="address-input" class="input" placeholder="192.168.1.42:47823" />
+        <div class="modal-actions">
+          <button id="address-cancel" class="button button-quiet" type="button">Cancel</button>
+          <button id="address-connect" class="button button-primary" type="button">Connect</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="sender-modal" class="modal hidden" role="dialog" aria-modal="true">
+      <div class="modal-body">
+        <h2>Send files</h2>
+        <p id="sender-summary" class="muted"></p>
+        <div id="sender-targets" class="target-list"></div>
+        <div class="modal-actions">
+          <button id="sender-cancel" class="button button-quiet" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="drop-overlay" class="drop-overlay hidden">
+      <div class="drop-card">
+        <strong>Drop to send</strong>
+        <span>Release the files to choose a destination.</span>
+      </div>
+    </div>
+
+    <div id="toasts" class="toasts" aria-live="polite"></div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

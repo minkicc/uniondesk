@@ -1,0 +1,16 @@
+[package]
+name = "ud-clipboard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ud-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+arboard.workspace = true
+png.workspace = true
+sha2.workspace = true
+tokio.workspace = true
