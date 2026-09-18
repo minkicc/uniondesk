@@ -1,6 +1,6 @@
 # UnionDesk
 
-[![CI](https://github.com/ruiqiangzh/uniondesk/actions/workflows/ci.yml/badge.svg)](https://github.com/ruiqiangzh/uniondesk/actions/workflows/ci.yml)
+[![CI](https://github.com/minkicc/uniondesk/actions/workflows/ci.yml/badge.svg)](https://github.com/minkicc/uniondesk/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Use one keyboard, mouse and clipboard across the computers on your local network,
