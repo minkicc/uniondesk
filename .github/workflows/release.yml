@@ -1,15 +1,17 @@
 name: Release
 
 # Push a tag such as v0.1.0 to build installers for every platform and attach
-# them to a draft GitHub release.
+# them to a draft GitHub release. The workflow can also be started by hand from
+# the Actions tab, which is useful for producing a build without tagging.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to build and publish (for example v0.1.0)"
+        description: "Tag to build and publish, for example v0.1.0"
         required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,29 +29,32 @@ jobs:
           - label: Windows x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-          - label: macOS Apple silicon
+            rust_targets: x86_64-pc-windows-msvc
+          - label: macOS universal
             os: macos-latest
-            target: aarch64-apple-darwin
-          - label: macOS Intel
-            os: macos-13
-            target: x86_64-apple-darwin
+            # One disk image that runs natively on both Apple silicon and Intel.
+            # GitHub no longer offers Intel macOS runners, so the x86_64 slice is
+            # cross compiled on an arm64 host, which Apple's toolchain supports.
+            target: universal-apple-darwin
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.rust_targets }}
 
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+          # The workspace keeps its build output at the repository root.
           workspaces: ". -> target"
 
       - name: Tests
-        run: cargo test --workspace --target ${{ matrix.target }}
+        run: cargo test --workspace
 
       # To ship signed and notarised macOS builds, add these repository secrets
-      # and uncomment the block below. Without them the bundles are unsigned and
+      # and uncomment the env block. Without them the bundles are unsigned and
       # Gatekeeper will warn on first launch.
       #
       # env:
@@ -59,35 +64,41 @@ jobs:
       #   APPLE_ID: ${{ secrets.APPLE_ID }}
       #   APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
       #   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      - uses: tauri-apps/tauri-action@v0
+      - name: Build bundles
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          projectPath: apps/desktop/src-tauri
+          projectPath: apps/desktop
           args: --target ${{ matrix.target }}
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "UnionDesk ${{ github.event.inputs.tag || github.ref_name }}"
           releaseBody: |
             Installers for Windows and macOS are attached below.
 
-            macOS builds are unsigned; right click the app and choose Open the
-            first time, or build from source.
+            macOS builds are unsigned: right click the application and choose
+            Open the first time.
           releaseDraft: true
           prerelease: false
 
       - name: Checksums
         shell: bash
         run: |
-          cd apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle
-          find . -type f \( -name '*.msi' -o -name '*.exe' -o -name '*.dmg' -o -name '*.app.tar.gz' \) \
-            -exec sha256sum {} \; > SHA256SUMS-${{ matrix.target }}.txt || true
+          bundle="target/${{ matrix.target }}/release/bundle"
+          if [ -d "$bundle" ]; then
+            find "$bundle" -type f \( -name '*.msi' -o -name '*.exe' -o -name '*.dmg' \) \
+              -exec shasum -a 256 {} \; > "target/checksums-${{ matrix.target }}.txt"
+            cat "target/checksums-${{ matrix.target }}.txt"
+          fi
 
+      # A second copy of the artefacts, so a build stays downloadable even while
+      # the release itself is still a draft.
       - uses: actions/upload-artifact@v4
         with:
           name: uniondesk-${{ matrix.target }}
           path: |
-            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
-            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
-            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
-            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/SHA256SUMS-*.txt
+            target/${{ matrix.target }}/release/bundle/**/*.msi
+            target/${{ matrix.target }}/release/bundle/**/*.exe
+            target/${{ matrix.target }}/release/bundle/**/*.dmg
+            target/checksums-${{ matrix.target }}.txt
           if-no-files-found: warn
