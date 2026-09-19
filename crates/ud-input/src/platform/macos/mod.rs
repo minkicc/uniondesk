@@ -428,10 +428,10 @@ pub fn inject(event: &InputEvent) -> Result<(), InputError> {
     match event {
         InputEvent::MoveRel { dx, dy } => {
             let current = raw_cursor_position();
-            let target = CGPoint {
+            let target = clamp_to_desktop(CGPoint {
                 x: current.x + dx,
                 y: current.y + dy,
-            };
+            });
             let event_type = drag_event_type();
             unsafe {
                 let created = CGEventCreateMouseEvent(source, event_type, target, drag_button());
@@ -447,7 +447,7 @@ pub fn inject(event: &InputEvent) -> Result<(), InputError> {
             Ok(())
         }
         InputEvent::MoveAbs { x, y } => {
-            let target = CGPoint { x: *x, y: *y };
+            let target = clamp_to_desktop(CGPoint { x: *x, y: *y });
             unsafe {
                 let created =
                     CGEventCreateMouseEvent(source, drag_event_type(), target, drag_button());
@@ -550,6 +550,67 @@ fn drag_button() -> u32 {
 /// Whether this process currently holds the permissions macOS requires.
 pub fn permissions_granted() -> (bool, bool) {
     unsafe { (AXIsProcessTrusted(), CGPreflightListenEventAccess()) }
+}
+
+/// The bounding rectangle of every active display, cached for a couple of
+/// seconds. Recomputing it per relayed movement would query the display list
+/// hundreds of times a second for a value that changes at most a few times a
+/// session.
+fn desktop_bounds() -> CGRect {
+    static CACHE: OnceLock<parking_lot::Mutex<Option<(std::time::Instant, CGRect)>>> =
+        OnceLock::new();
+    let cache = CACHE.get_or_init(|| parking_lot::Mutex::new(None));
+    let mut guard = cache.lock();
+    if let Some((at, bounds)) = *guard {
+        if at.elapsed() < std::time::Duration::from_secs(2) && bounds.size.width > 0.0 {
+            return bounds;
+        }
+    }
+    let mut ids = [0u32; 16];
+    let mut count = 0u32;
+    let status = unsafe { CGGetActiveDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) };
+    let mut bounds = CGRect::default();
+    if status == 0 && count > 0 {
+        let first = unsafe { CGDisplayBounds(ids[0]) };
+        bounds = first;
+        for index in 1..count.min(ids.len() as u32) {
+            let next = unsafe { CGDisplayBounds(ids[index as usize]) };
+            let x0 = bounds.origin.x.min(next.origin.x);
+            let y0 = bounds.origin.y.min(next.origin.y);
+            let x1 = (bounds.origin.x + bounds.size.width).max(next.origin.x + next.size.width);
+            let y1 = (bounds.origin.y + bounds.size.height).max(next.origin.y + next.size.height);
+            bounds = CGRect {
+                origin: CGPoint { x: x0, y: y0 },
+                size: CGSize {
+                    width: x1 - x0,
+                    height: y1 - y0,
+                },
+            };
+        }
+    }
+    *guard = Some((std::time::Instant::now(), bounds));
+    bounds
+}
+
+/// Keeps a synthesized position inside the desktop.
+///
+/// Pushing past an edge has to land the cursor exactly on the edge pixel: the
+/// Dock's reveal zone, hot corners and the menu bar all live in those last
+/// pixels, and a position outside the display is not somewhere the cursor can
+/// actually be.
+fn clamp_to_desktop(point: CGPoint) -> CGPoint {
+    let bounds = desktop_bounds();
+    if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+        return point;
+    }
+    let min_x = bounds.origin.x;
+    let min_y = bounds.origin.y;
+    let max_x = (bounds.origin.x + bounds.size.width - 1.0).max(min_x);
+    let max_y = (bounds.origin.y + bounds.size.height - 1.0).max(min_y);
+    CGPoint {
+        x: point.x.clamp(min_x, max_x),
+        y: point.y.clamp(min_y, max_y),
+    }
 }
 
 /// A message naming the permission that is still missing, if any.
