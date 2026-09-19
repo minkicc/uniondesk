@@ -118,6 +118,12 @@ unsafe fn pump(commands: Receiver<Command>) {
             break;
         }
         if message.message == WM_TIMER {
+            if CAPTURE_MOUSE.load(Ordering::Relaxed) {
+                // The cursor is parked in the middle of the screen while a peer
+                // owns it. Some applications reset the cursor shape when they
+                // see activity, so put it back out of sight periodically.
+                let _ = SetCursor(None);
+            }
             if drain(&commands) {
                 break;
             }
