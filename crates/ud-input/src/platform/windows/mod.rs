@@ -1,53 +1,48 @@
 //! Windows backend.
 //!
-//! Capture uses two mechanisms together because neither is sufficient alone:
+//! Capture is a pair of low level hooks (`WH_MOUSE_LL` / `WH_KEYBOARD_LL`) on a
+//! dedicated thread with a message loop. Those hooks can *swallow* input before
+//! the rest of the system sees it, which is what lets a peer own the keyboard
+//! and mouse.
 //!
-//! * a low level mouse/keyboard hook (`WH_MOUSE_LL` / `WH_KEYBOARD_LL`) runs on
-//!   our own message loop thread and can *swallow* input before the rest of the
-//!   system sees it;
-//! * raw input (`WM_INPUT`) is the only source of true device deltas, because a
-//!   swallowed move still reports the post-acceleration cursor position through
-//!   the hook, which would drift while we keep the cursor parked.
+//! Movement is measured from the hook's own cursor position rather than from raw
+//! input. That is deliberate: raw input is not dependable while a low level hook
+//! is discarding the very messages it is derived from, and a tool that silently
+//! produces no deltas is worse than one that is slightly less precise.
 //!
-//! Injection uses `SendInput` with scan codes so the receiving machine applies
-//! its own keyboard layout, and with an extra info tag so our own hook ignores
-//! anything we synthesise.
+//! The trick, as used by Synergy and Barrier before it, is that the hook reports
+//! the position the cursor *would* move to. The cursor is therefore pinned to a
+//! fixed origin and the distance from that origin is the movement for this event.
+//! The origin is the centre of the primary display, not the screen edge, because
+//! positions near an edge would be clamped and the outward movement that starts a
+//! handover would be lost.
 
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::OnceLock;
 
 use tokio::sync::mpsc::UnboundedSender;
 use ud_core::geom::{DisplayInfo, Point, Rect};
 use ud_core::input::{InputEvent, Modifiers, MouseButton};
-use windows::core::{w, BOOL};
-use windows::Win32::Foundation::{
-    HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
-};
-use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
-};
+use windows::core::BOOL;
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEINPUT,
-    MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
-    MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-    MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
-};
-use windows::Win32::UI::Input::{
-    GetRawInputData, RegisterRawInputDevices, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RID_INPUT,
-    RIDEV_INPUTSINK, RIM_TYPEMOUSE,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEINPUT, MOUSEEVENTF_HWHEEL,
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+    MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL,
+    MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, GetMessageW,
-    PostQuitMessage, RegisterClassW, SetCursorPos, SetTimer, SetWindowsHookExW, TranslateMessage,
-    UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, RI_MOUSE_BUTTON_4_DOWN,
-    RI_MOUSE_BUTTON_4_UP, RI_MOUSE_BUTTON_5_DOWN, RI_MOUSE_BUTTON_5_UP, RI_MOUSE_HWHEEL,
-    RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP, RI_MOUSE_MIDDLE_BUTTON_DOWN,
-    RI_MOUSE_MIDDLE_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP,
-    RI_MOUSE_WHEEL, MONITORINFOF_PRIMARY, WHEEL_DELTA, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_INPUT,
-    WM_TIMER, WNDCLASSW,
+    CallNextHookEx, GetCursorPos, GetMessageW, GetSystemMetrics, LoadCursorW, PeekMessageW,
+    PostQuitMessage, SetCursor, SetCursorPos, SetTimer, SetWindowsHookExW, TranslateMessage,
+    UnhookWindowsHookEx, DispatchMessageW, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, MONITORINFOF_PRIMARY,
+    SM_CXSCREEN, SM_CYSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEHWHEEL, WM_MOUSEWHEEL, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WHEEL_DELTA, IDC_ARROW,
+    PEEK_MESSAGE_REMOVE_TYPE, PM_NOREMOVE,
 };
 
 use super::{CaptureOptions, Command};
@@ -64,14 +59,22 @@ const LLKHF_INJECTED: u32 = 0x10;
 const LLKHF_UP: u32 = 0x80;
 const LLMHF_INJECTED: u32 = 0x01;
 
-const USE_KEYBOARD: u16 = 0x01;
-const USE_MOUSE: u16 = 0x02;
-
 static EVENTS: OnceLock<UnboundedSender<CapturedEvent>> = OnceLock::new();
 static CAPTURE_MOUSE: AtomicBool = AtomicBool::new(false);
 static CAPTURE_KEYS: AtomicBool = AtomicBool::new(false);
-static PARK_X: AtomicI32 = AtomicI32::new(0);
-static PARK_Y: AtomicI32 = AtomicI32::new(0);
+
+/// The point the cursor is pinned to while a peer owns it, and the origin that
+/// movement is measured from.
+static ORIGIN_X: AtomicI32 = AtomicI32::new(0);
+static ORIGIN_Y: AtomicI32 = AtomicI32::new(0);
+
+/// Observability. A handover that produces no movement should be diagnosable
+/// from the log rather than guessed at.
+static MOUSE_HOOK_CALLS: AtomicU64 = AtomicU64::new(0);
+static KEY_HOOK_CALLS: AtomicU64 = AtomicU64::new(0);
+static DELTAS_EMITTED: AtomicU64 = AtomicU64::new(0);
+static FIRST_DELTA_LOGGED: AtomicBool = AtomicBool::new(false);
+
 /// `[keyboard hook, mouse hook]`, stored as integers so the static stays `Sync`.
 static HOOKS: parking_lot::Mutex<[isize; 2]> = parking_lot::Mutex::new([0, 0]);
 
@@ -95,62 +98,13 @@ pub fn run(
     }
 }
 
+/// The low level hooks need a thread with a message queue; no window is
+/// involved, which also removes a whole class of "the window never received
+/// anything" problems.
 unsafe fn init() -> Result<(), String> {
-    let hinstance = GetModuleHandleW(None).map_err(|e| e.to_string())?;
-    let class_name = w!("UnionDeskInputSink");
-    let window_class = WNDCLASSW {
-        lpfnWndProc: Some(window_proc),
-        hInstance: hinstance.into(),
-        lpszClassName: class_name,
-        ..Default::default()
-    };
-    if RegisterClassW(&window_class) == 0 {
-        // A zero return means the class already exists, which is fine.
-        let err = windows::core::Error::from_win32();
-        if err.code().0 as u32 != 0x8007_0582 {
-            // ERROR_CLASS_ALREADY_EXISTS is not an error for our purposes; any
-            // other failure means we cannot receive raw input.
-            if err.code().0 as u32 != 0 {
-                return Err(format!("could not register the input window class: {err}"));
-            }
-        }
-    }
-
-    let hwnd = CreateWindowExW(
-        Default::default(),
-        class_name,
-        w!("UnionDesk"),
-        Default::default(),
-        0,
-        0,
-        0,
-        0,
-        None,
-        None,
-        Some(hinstance.into()),
-        None,
-    )
-    .map_err(|e| format!("could not create the input window: {e}"))?;
-    let _ = hwnd;
-
-    // Raw input goes to our window even when it is not focused.
-    let devices = [
-        RAWINPUTDEVICE {
-            usUsagePage: USE_KEYBOARD,
-            usUsage: 0x06,
-            dwFlags: RIDEV_INPUTSINK,
-            hwndTarget: hwnd,
-        },
-        RAWINPUTDEVICE {
-            usUsagePage: USE_MOUSE,
-            usUsage: 0x02,
-            dwFlags: RIDEV_INPUTSINK,
-            hwndTarget: hwnd,
-        },
-    ];
-    RegisterRawInputDevices(&devices, std::mem::size_of::<RAWINPUTDEVICE>() as u32)
-        .map_err(|e| format!("could not register raw input: {e}"))?;
-
+    let mut message = MSG::default();
+    // Touching the queue first guarantees SetTimer below has somewhere to post.
+    let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
     // A timer whose only job is to wake the loop so queued commands run.
     SetTimer(None, 1, 10, None);
     Ok(())
@@ -185,7 +139,10 @@ fn drain(commands: &Receiver<Command>) -> bool {
             }
             Command::Shutdown => {
                 uninstall_hooks();
-                unsafe { PostQuitMessage(0) };
+                unsafe {
+                    show_system_cursor(true);
+                    PostQuitMessage(0);
+                }
                 return true;
             }
         }
@@ -196,24 +153,60 @@ fn drain(commands: &Receiver<Command>) -> bool {
 fn apply_capture(options: CaptureOptions) {
     let want_mouse = options.mouse;
     let want_keys = options.keyboard;
-    if let Some(park) = options.park_at {
-        PARK_X.store(park.x.round() as i32, Ordering::Relaxed);
-        PARK_Y.store(park.y.round() as i32, Ordering::Relaxed);
-    }
 
-    let installed = { HOOKS.lock()[0] != 0 };
-    if want_mouse || want_keys {
-        CAPTURE_MOUSE.store(want_mouse, Ordering::SeqCst);
-        CAPTURE_KEYS.store(want_keys, Ordering::SeqCst);
-        if !installed {
-            install_hooks();
-        }
-    } else {
+    let installed = HOOKS.lock()[0] != 0;
+    if !(want_mouse || want_keys) {
         CAPTURE_MOUSE.store(false, Ordering::SeqCst);
         CAPTURE_KEYS.store(false, Ordering::SeqCst);
         if installed {
             uninstall_hooks();
         }
+        unsafe { show_system_cursor(true) };
+        return;
+    }
+
+    if want_mouse && !CAPTURE_MOUSE.load(Ordering::SeqCst) {
+        unsafe { begin_mouse_capture() };
+    }
+    CAPTURE_MOUSE.store(want_mouse, Ordering::SeqCst);
+    CAPTURE_KEYS.store(want_keys, Ordering::SeqCst);
+
+    if !installed {
+        install_hooks();
+    }
+}
+
+/// Establishes the movement origin and hides the cursor.
+unsafe fn begin_mouse_capture() {
+    let (x, y) = primary_centre();
+    ORIGIN_X.store(x, Ordering::SeqCst);
+    ORIGIN_Y.store(y, Ordering::SeqCst);
+    // Move to the origin *now*, so the very next event is measured from it and
+    // does not report the whole distance travelled to the screen edge.
+    let _ = SetCursorPos(x, y);
+    show_system_cursor(false);
+    MOUSE_HOOK_CALLS.store(0, Ordering::SeqCst);
+    DELTAS_EMITTED.store(0, Ordering::SeqCst);
+    FIRST_DELTA_LOGGED.store(false, Ordering::SeqCst);
+}
+
+/// The centre of the primary display, which is always inside the virtual desktop
+/// and far enough from every edge that a single event cannot be clamped.
+unsafe fn primary_centre() -> (i32, i32) {
+    let width = GetSystemMetrics(SM_CXSCREEN);
+    let height = GetSystemMetrics(SM_CYSCREEN);
+    (width / 2, height / 2)
+}
+
+/// Hides the cursor by giving it no shape at all. The mouse messages are being
+/// swallowed, so nothing else gets a chance to set one back.
+unsafe fn show_system_cursor(visible: bool) {
+    if visible {
+        if let Ok(arrow) = LoadCursorW(None, IDC_ARROW) {
+            let _ = SetCursor(Some(arrow));
+        }
+    } else {
+        let _ = SetCursor(None);
     }
 }
 
@@ -234,6 +227,7 @@ fn install_hooks() {
         (Ok(kb), Ok(ms)) => {
             hooks[0] = kb.0 as isize;
             hooks[1] = ms.0 as isize;
+            tracing::info!("input hooks installed");
         }
         (kb, ms) => {
             if let Ok(kb) = kb {
@@ -253,6 +247,14 @@ fn install_hooks() {
 
 fn uninstall_hooks() {
     let mut hooks = HOOKS.lock();
+    if hooks[0] != 0 || hooks[1] != 0 {
+        tracing::info!(
+            mouse_hook_calls = MOUSE_HOOK_CALLS.load(Ordering::SeqCst),
+            key_hook_calls = KEY_HOOK_CALLS.load(Ordering::SeqCst),
+            deltas = DELTAS_EMITTED.load(Ordering::SeqCst),
+            "releasing input capture"
+        );
+    }
     for slot in hooks.iter_mut() {
         if *slot != 0 {
             let hook = windows::Win32::UI::WindowsAndMessaging::HHOOK(*slot as *mut core::ffi::c_void);
@@ -268,130 +270,6 @@ fn emit(event: CapturedEvent) {
     }
 }
 
-unsafe extern "system" fn window_proc(
-    hwnd: HWND,
-    message: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    if message == WM_INPUT {
-        handle_raw_input(HRAWINPUT(lparam.0 as *mut core::ffi::c_void));
-    }
-    DefWindowProcW(hwnd, message, wparam, lparam)
-}
-
-unsafe fn handle_raw_input(handle: HRAWINPUT) {
-    let header_size = std::mem::size_of::<windows::Win32::UI::Input::RAWINPUTHEADER>() as u32;
-    let mut size = 0u32;
-    let asked = GetRawInputData(handle, RID_INPUT, None, &mut size, header_size);
-    if asked == u32::MAX || size == 0 {
-        return;
-    }
-    let mut buffer = vec![0u8; size as usize];
-    let written = GetRawInputData(
-        handle,
-        RID_INPUT,
-        Some(buffer.as_mut_ptr() as *mut core::ffi::c_void),
-        &mut size,
-        header_size,
-    );
-    if written == u32::MAX || written == 0 {
-        return;
-    }
-    let raw = &*(buffer.as_ptr() as *const RAWINPUT);
-    if raw.header.dwType != RIM_TYPEMOUSE.0 {
-        return;
-    }
-    if !CAPTURE_MOUSE.load(Ordering::Relaxed) {
-        return;
-    }
-    let mouse = raw.data.mouse;
-    let flags = mouse.Anonymous.Anonymous.usButtonFlags as u32;
-    let data = mouse.Anonymous.Anonymous.usButtonData as i16 as f64;
-
-    if flags & RI_MOUSE_LEFT_BUTTON_DOWN != 0 {
-        emit(CapturedEvent::Button {
-            button: MouseButton::Left,
-            down: true,
-        });
-    }
-    if flags & RI_MOUSE_LEFT_BUTTON_UP != 0 {
-        emit(CapturedEvent::Button {
-            button: MouseButton::Left,
-            down: false,
-        });
-    }
-    if flags & RI_MOUSE_RIGHT_BUTTON_DOWN != 0 {
-        emit(CapturedEvent::Button {
-            button: MouseButton::Right,
-            down: true,
-        });
-    }
-    if flags & RI_MOUSE_RIGHT_BUTTON_UP != 0 {
-        emit(CapturedEvent::Button {
-            button: MouseButton::Right,
-            down: false,
-        });
-    }
-    if flags & RI_MOUSE_MIDDLE_BUTTON_DOWN != 0 {
-        emit(CapturedEvent::Button {
-            button: MouseButton::Middle,
-            down: true,
-        });
-    }
-    if flags & RI_MOUSE_MIDDLE_BUTTON_UP != 0 {
-        emit(CapturedEvent::Button {
-            button: MouseButton::Middle,
-            down: false,
-        });
-    }
-    if flags & RI_MOUSE_BUTTON_4_DOWN != 0 {
-        emit(CapturedEvent::Button {
-            button: MouseButton::X1,
-            down: true,
-        });
-    }
-    if flags & RI_MOUSE_BUTTON_4_UP != 0 {
-        emit(CapturedEvent::Button {
-            button: MouseButton::X1,
-            down: false,
-        });
-    }
-    if flags & RI_MOUSE_BUTTON_5_DOWN != 0 {
-        emit(CapturedEvent::Button {
-            button: MouseButton::X2,
-            down: true,
-        });
-    }
-    if flags & RI_MOUSE_BUTTON_5_UP != 0 {
-        emit(CapturedEvent::Button {
-            button: MouseButton::X2,
-            down: false,
-        });
-    }
-    if flags & RI_MOUSE_WHEEL != 0 {
-        emit(CapturedEvent::Wheel {
-            dx: 0.0,
-            dy: data / WHEEL_DELTA as f64,
-        });
-    }
-    if flags & RI_MOUSE_HWHEEL != 0 {
-        emit(CapturedEvent::Wheel {
-            dx: data / WHEEL_DELTA as f64,
-            dy: 0.0,
-        });
-    }
-
-    if mouse.lLastX != 0 || mouse.lLastY != 0 {
-        emit(CapturedEvent::MoveDelta {
-            dx: mouse.lLastX as f64,
-            dy: mouse.lLastY as f64,
-        });
-        // Keep the local pointer pinned where it was left.
-        let _ = SetCursorPos(PARK_X.load(Ordering::Relaxed), PARK_Y.load(Ordering::Relaxed));
-    }
-}
-
 unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code < 0 || !CAPTURE_MOUSE.load(Ordering::Relaxed) {
         return CallNextHookEx(None, code, wparam, lparam);
@@ -400,7 +278,67 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
     if info.flags & LLMHF_INJECTED != 0 || info.dwExtraInfo == INJECT_TAG {
         return CallNextHookEx(None, code, wparam, lparam);
     }
-    // Swallow every physical mouse message; raw input already reported it.
+    MOUSE_HOOK_CALLS.fetch_add(1, Ordering::Relaxed);
+
+    match wparam.0 as u32 {
+        WM_MOUSEMOVE => {
+            let (origin_x, origin_y) = (ORIGIN_X.load(Ordering::Relaxed), ORIGIN_Y.load(Ordering::Relaxed));
+            let dx = info.pt.x - origin_x;
+            let dy = info.pt.y - origin_y;
+            if dx != 0 || dy != 0 {
+                DELTAS_EMITTED.fetch_add(1, Ordering::Relaxed);
+                if !FIRST_DELTA_LOGGED.swap(true, Ordering::Relaxed) {
+                    tracing::info!(dx, dy, "first movement captured");
+                }
+                emit(CapturedEvent::MoveDelta {
+                    dx: dx as f64,
+                    dy: dy as f64,
+                });
+            }
+            // Pin the cursor back to the origin so the next event is measured
+            // from the same place, and keep it invisible while we do.
+            let _ = SetCursorPos(origin_x, origin_y);
+            let _ = SetCursor(None);
+        }
+        WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN
+        | WM_MBUTTONUP => {
+            let (button, down) = match wparam.0 as u32 {
+                WM_LBUTTONDOWN => (MouseButton::Left, true),
+                WM_LBUTTONUP => (MouseButton::Left, false),
+                WM_RBUTTONDOWN => (MouseButton::Right, true),
+                WM_RBUTTONUP => (MouseButton::Right, false),
+                WM_MBUTTONDOWN => (MouseButton::Middle, true),
+                _ => (MouseButton::Middle, false),
+            };
+            emit(CapturedEvent::Button { button, down });
+        }
+        WM_XBUTTONDOWN | WM_XBUTTONUP => {
+            let which = ((info.mouseData >> 16) & 0xffff) as u16;
+            let button = if which == 2 {
+                MouseButton::X2
+            } else {
+                MouseButton::X1
+            };
+            let down = wparam.0 as u32 == WM_XBUTTONDOWN;
+            emit(CapturedEvent::Button { button, down });
+        }
+        WM_MOUSEWHEEL => {
+            let delta = ((info.mouseData >> 16) & 0xffff) as u16 as i16;
+            emit(CapturedEvent::Wheel {
+                dx: 0.0,
+                dy: delta as f64 / WHEEL_DELTA as f64,
+            });
+        }
+        WM_MOUSEHWHEEL => {
+            let delta = ((info.mouseData >> 16) & 0xffff) as u16 as i16;
+            emit(CapturedEvent::Wheel {
+                dx: delta as f64 / WHEEL_DELTA as f64,
+                dy: 0.0,
+            });
+        }
+        _ => {}
+    }
+    // Swallow every physical mouse message; the peer is the only consumer now.
     LRESULT(1)
 }
 
@@ -412,6 +350,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
     if info.flags.0 & LLKHF_INJECTED != 0 || info.dwExtraInfo == INJECT_TAG {
         return CallNextHookEx(None, code, wparam, lparam);
     }
+    KEY_HOOK_CALLS.fetch_add(1, Ordering::Relaxed);
 
     let mut scan = info.scanCode as u16;
     if info.flags.0 & LLKHF_EXTENDED != 0 {
@@ -473,16 +412,14 @@ pub fn displays() -> Vec<DisplayInfo> {
         );
     }
     if out.is_empty() {
-        if let Some(point) = cursor_position() {
-            out.push(DisplayInfo {
-                id: "primary".into(),
-                name: "Display".into(),
-                bounds: Rect::new(0.0, 0.0, 1920.0, 1080.0),
-                scale_factor: 1.0,
-                is_primary: true,
-            });
-            let _ = point;
-        }
+        let (width, height) = unsafe { primary_centre() };
+        out.push(DisplayInfo {
+            id: "primary".into(),
+            name: "Display".into(),
+            bounds: Rect::new(0.0, 0.0, (width * 2) as f64, (height * 2) as f64),
+            scale_factor: 1.0,
+            is_primary: true,
+        });
     }
     out
 }
@@ -619,3 +556,6 @@ fn send(inputs: &[INPUT]) -> Result<(), InputError> {
     }
     Ok(())
 }
+
+#[allow(dead_code)]
+fn unused(_: HWND, _: PEEK_MESSAGE_REMOVE_TYPE) {}

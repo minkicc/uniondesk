@@ -46,6 +46,10 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(25);
 const DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(400);
 /// How long the non-displaying side waits before it asks for the code instead.
 const PAIRING_HANDOFF_DELAY: Duration = Duration::from_millis(1500);
+/// How long a handover is allowed to settle before its edge is armed again.
+/// The cursor is moved to the edge as part of entering and leaving, and that
+/// jump must not be mistaken for the user still pushing outwards.
+const HANDOVER_SETTLE: Duration = Duration::from_millis(300);
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -300,6 +304,10 @@ struct Engine {
     held_keys: HashSet<KeyCode>,
     held_buttons: HashSet<MouseButton>,
     last_scroll_lock: Option<Instant>,
+    /// Set while a handover is settling, in either direction.
+    settle_until: Option<Instant>,
+    /// Whether the current handover has already reported its first relayed event.
+    relay_logged: bool,
     listening_port: u16,
     capture_active: bool,
     clipboard_status: ClipboardStatusView,
@@ -344,6 +352,8 @@ impl Engine {
             held_keys: HashSet::new(),
             held_buttons: HashSet::new(),
             last_scroll_lock: None,
+            settle_until: None,
+            relay_logged: false,
             listening_port: 0,
             capture_active: false,
             clipboard_status: ClipboardStatusView {
@@ -1260,12 +1270,17 @@ impl Engine {
 
         match &self.control {
             ControlState::Local => {
-                if self.settings.input.enabled {
+                if self.settings.input.enabled && !self.is_settling() {
                     self.try_engage(position, delta).await;
                 }
             }
             ControlState::Controlling { .. } => {}
             ControlState::Controlled { return_side, .. } => {
+                // The peer moved our cursor to its edge a moment ago; ignore the
+                // jump that produced.
+                if self.is_settling() {
+                    return;
+                }
                 let side = *return_side;
                 let tolerance = self.settings.input.edge_armed_pixels.max(1.0);
                 if hits_edge(self.desktop, side, position, tolerance)
@@ -1318,20 +1333,21 @@ impl Engine {
         let Some((link, placed, entry)) = candidate else {
             return;
         };
-        let park = park_point(self.desktop, link.local_side, position);
         let keyboard = self.settings.input.relay_keyboard;
         if let Some(input) = &self.input {
             if let Err(err) = input.set_capture(CaptureOptions {
                 mouse: true,
                 keyboard,
-                park_at: Some(park),
             }) {
                 self.notify(Notice::error(format!("Could not take over the input: {err}")));
                 return;
             }
         }
         self.capture_active = true;
-        self.last_cursor = Some(park);
+        self.relay_logged = false;
+        // The platform moves the cursor while it captures; forget where it was
+        // so the resulting jump is not mistaken for movement.
+        self.last_cursor = None;
         self.control = ControlState::Controlling {
             peer: link.peer.clone(),
             placed,
@@ -1342,6 +1358,13 @@ impl Engine {
             .get(&link.peer)
             .map(|session| session.info.name.clone())
             .unwrap_or_default();
+        info!(
+            peer = %name,
+            side = link.local_side.label(),
+            entry_x = entry.x,
+            entry_y = entry.y,
+            "taking control of the peer"
+        );
         self.notify(Notice::info(format!("Controlling {name}.")));
         self.send_to(
             &link.peer,
@@ -1357,12 +1380,17 @@ impl Engine {
     }
 
     async fn release_control(&mut self, reason: &str) {
+        // Peek before taking the state apart: this is also called from the UI
+        // and on shutdown, where the engine may well be in another mode, and
+        // clobbering that would strand the peer in "controlled" forever.
+        let previous = std::mem::replace(&mut self.control, ControlState::Local);
         let ControlState::Controlling {
             peer,
             placed,
             peer_cursor,
-        } = std::mem::replace(&mut self.control, ControlState::Local)
+        } = previous
         else {
+            self.control = previous;
             return;
         };
         debug!(reason, "releasing control");
@@ -1371,6 +1399,8 @@ impl Engine {
             let _ = input.warp(return_point(&placed, peer_cursor));
         }
         self.capture_active = false;
+        self.last_cursor = None;
+        self.settle_until = Some(Instant::now() + HANDOVER_SETTLE);
         self.send_to(
             &peer,
             Message::Control(InputControl::Release {
@@ -1380,6 +1410,48 @@ impl Engine {
         )
         .await;
         self.publish().await;
+    }
+
+    /// The peer's cursor reached the edge that faces us, so control comes home.
+    ///
+    /// The peer releases its own half of the handover before sending this, which
+    /// means the reply below is what puts *this* machine back into local mode.
+    /// Forgetting to do that left the local cursor captured and stuck at the
+    /// screen edge with no way back.
+    async fn on_return_home(&mut self, peer: DeviceId, point: Point) {
+        if !matches!(&self.control, ControlState::Controlling { peer: active, .. } if active == &peer)
+        {
+            return;
+        }
+        let previous = std::mem::replace(&mut self.control, ControlState::Local);
+        let ControlState::Controlling { placed, .. } = previous else {
+            self.control = previous;
+            return;
+        };
+        if let Some(input) = &self.input {
+            let _ = input.release_capture();
+            let _ = input.warp(return_point(&placed, point));
+        }
+        self.capture_active = false;
+        self.last_cursor = None;
+        self.settle_until = Some(Instant::now() + HANDOVER_SETTLE);
+        self.send_to(
+            &peer,
+            Message::Control(InputControl::Release {
+                x: point.x,
+                y: point.y,
+            }),
+        )
+        .await;
+        info!(%peer, x = point.x, y = point.y, "control returned home");
+        self.notify(Notice::info("Control came back to this machine."));
+        self.publish().await;
+    }
+
+    fn is_settling(&self) -> bool {
+        self.settle_until
+            .map(|until| Instant::now() < until)
+            .unwrap_or(false)
     }
 
     async fn on_captured(&mut self, event: CapturedEvent) {
@@ -1424,9 +1496,15 @@ impl Engine {
             CapturedEvent::CaptureLost { .. } => return,
         };
         if let Some(session) = self.sessions.get(&peer) {
-            session
+            let forwarded = session
                 .connection
                 .try_send_urgent(Message::Input(outgoing));
+            if forwarded && !self.relay_logged {
+                self.relay_logged = true;
+                info!(%peer, "relaying input to the peer");
+            } else if !forwarded {
+                trace!(%peer, "the outbound queue is full, dropping an input event");
+            }
         }
     }
 
@@ -1514,12 +1592,17 @@ impl Engine {
                     return_side,
                     keyboard,
                 };
-                self.last_cursor = Some(Point::new(x, y));
+                // The warp lands the cursor on the edge we are expected to
+                // return through, so forget the previous sample and give the
+                // move time to land before watching for an outward push.
+                self.last_cursor = None;
+                self.settle_until = Some(Instant::now() + HANDOVER_SETTLE);
                 let name = self
                     .sessions
                     .get(&peer)
                     .map(|session| session.info.name.clone())
                     .unwrap_or_default();
+                info!(peer = %name, x, y, return_side = return_side.label(), "peer took control");
                 self.notify(Notice::info(format!("{name} is controlling this machine.")));
                 self.publish().await;
             }
@@ -1528,13 +1611,11 @@ impl Engine {
                 if let Some(input) = &self.input {
                     let _ = input.warp(Point::new(x, y));
                 }
-                self.last_cursor = Some(Point::new(x, y));
+                self.last_cursor = None;
                 self.control = ControlState::Local;
                 self.publish().await;
             }
-            InputControl::ReturnHome { .. } => {
-                // Answered with a Release, so nothing to do here.
-            }
+            InputControl::ReturnHome { x, y } => self.on_return_home(peer, Point::new(x, y)).await,
             InputControl::ResetKeys => self.release_held_input().await,
         }
     }
@@ -2287,16 +2368,6 @@ fn pairing_view(session: &Session) -> Option<PairingView> {
         awaiting_code: pairing.awaiting_code,
         remote_fingerprint: session.info.fingerprint.clone(),
     })
-}
-
-/// Where the local cursor is parked while a peer owns the input.
-fn park_point(desktop: Rect, side: Side, position: Point) -> Point {
-    match side {
-        Side::Right => Point::new(desktop.right() - 1.0, position.y),
-        Side::Left => Point::new(desktop.left(), position.y),
-        Side::Bottom => Point::new(position.x, desktop.bottom() - 1.0),
-        Side::Top => Point::new(position.x, desktop.top()),
-    }
 }
 
 fn base64_key(bytes: &[u8]) -> String {

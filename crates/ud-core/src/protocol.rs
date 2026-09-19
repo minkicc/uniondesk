@@ -382,4 +382,125 @@ mod tests {
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(json["t"], "ping");
     }
+
+    /// Every variant has to survive the wire, including the nested enums. The
+    /// handover messages in particular are easy to get subtly wrong because they
+    /// carry a tagged enum inside a tagged enum.
+    #[test]
+    fn the_whole_vocabulary_round_trips() {
+        use crate::geom::{DisplayInfo, Rect, Side};
+        use crate::input::{key, InputEvent, Modifiers, MouseButton};
+
+        let device = DeviceInfo::new(
+            DeviceId::from("device"),
+            "laptop",
+            vec![DisplayInfo {
+                id: "d1".into(),
+                name: "Display".into(),
+                bounds: Rect::new(0.0, 0.0, 1920.0, 1080.0),
+                scale_factor: 1.0,
+                is_primary: true,
+            }],
+            &[7u8; 32],
+        );
+
+        let messages = vec![
+            Message::Hello {
+                protocol: 1,
+                device: device.clone(),
+            },
+            Message::HelloAck {
+                protocol: 1,
+                device: device.clone(),
+            },
+            Message::PairRequired {
+                code_hint: "123456".into(),
+            },
+            Message::PairResponse {
+                code: "123456".into(),
+                device: device.clone(),
+            },
+            Message::PairResult {
+                accepted: true,
+                reason: None,
+            },
+            Message::Ping { nonce: 1 },
+            Message::Pong { nonce: 1 },
+            Message::Displays {
+                displays: device.displays.clone(),
+            },
+            Message::Control(InputControl::Enter {
+                x: 2.0,
+                y: 540.0,
+                return_side: Side::Left,
+                keyboard: true,
+            }),
+            Message::Control(InputControl::Release { x: 1.0, y: 2.0 }),
+            Message::Control(InputControl::ReturnHome { x: 3.0, y: 4.0 }),
+            Message::Control(InputControl::ResetKeys),
+            Message::Input(InputEvent::MoveRel { dx: -3.0, dy: 4.0 }),
+            Message::Input(InputEvent::MoveAbs { x: 10.0, y: 20.0 }),
+            Message::Input(InputEvent::Button {
+                button: MouseButton::Left,
+                down: true,
+            }),
+            Message::Input(InputEvent::Wheel { dx: 0.0, dy: 1.0 }),
+            Message::Input(InputEvent::Key {
+                code: key::A,
+                down: true,
+                modifiers: Modifiers::NONE,
+            }),
+            Message::Clipboard(ClipboardPayload::Text {
+                text: "hello".into(),
+            }),
+            Message::Clipboard(ClipboardPayload::Image {
+                width: 2,
+                height: 2,
+                png: Blob::new(vec![1, 2, 3]),
+            }),
+            Message::Clipboard(ClipboardPayload::Clear),
+            Message::FileOffer(FileOffer {
+                transfer: TransferId(1),
+                sender_name: "laptop".into(),
+                total_bytes: 10,
+                files: vec![FileEntry {
+                    index: 0,
+                    name: "a.txt".into(),
+                    relative_path: "a.txt".into(),
+                    size: 10,
+                    is_dir: false,
+                }],
+            }),
+            Message::FileAccept(FileAccept {
+                transfer: TransferId(1),
+                rejected: vec![],
+            }),
+            Message::FileProgress(FileProgressReport {
+                transfer: TransferId(1),
+                index: 0,
+                bytes_done: 5,
+            }),
+            Message::FileFinished(FileFinished {
+                transfer: TransferId(1),
+                failed: vec![],
+            }),
+            Message::FileCancel {
+                transfer: TransferId(1),
+                reason: "no".into(),
+            },
+            Message::Bye {
+                reason: "bye".into(),
+            },
+            Message::Error {
+                message: "nope".into(),
+            },
+        ];
+
+        for message in messages {
+            let json = serde_json::to_vec(&message).unwrap();
+            let back: Message = serde_json::from_slice(&json)
+                .unwrap_or_else(|err| panic!("{:?} did not round trip: {err}", message.kind()));
+            assert_eq!(back, message, "{} changed on the wire", message.kind());
+        }
+    }
 }

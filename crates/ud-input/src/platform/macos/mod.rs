@@ -35,8 +35,6 @@ static EVENTS: OnceLock<UnboundedSender<CapturedEvent>> = OnceLock::new();
 static CAPTURE_MOUSE: AtomicBool = AtomicBool::new(false);
 static CAPTURE_KEYS: AtomicBool = AtomicBool::new(false);
 static WARPING: AtomicBool = AtomicBool::new(false);
-static PARK_X: AtomicI32 = AtomicI32::new(0);
-static PARK_Y: AtomicI32 = AtomicI32::new(0);
 static BUTTONS: AtomicU8 = AtomicU8::new(0);
 static TAP: AtomicUsize = AtomicUsize::new(0);
 static SOURCE: AtomicUsize = AtomicUsize::new(0);
@@ -94,10 +92,6 @@ fn apply_capture(options: CaptureOptions) {
         return;
     }
 
-    if let Some(park) = options.park_at {
-        PARK_X.store(park.x.round() as i32, Ordering::Relaxed);
-        PARK_Y.store(park.y.round() as i32, Ordering::Relaxed);
-    }
     match ensure_tap() {
         Ok(tap) => {
             CAPTURE_MOUSE.store(options.mouse, Ordering::SeqCst);
@@ -227,7 +221,8 @@ unsafe extern "C" fn tap_callback(
             if dx != 0.0 || dy != 0.0 {
                 emit(CapturedEvent::MoveDelta { dx, dy });
             }
-            park_cursor();
+            // The move is swallowed, so the local cursor simply stays where it
+            // was; there is nothing to pin.
             std::ptr::null_mut()
         }
         K_CG_EVENT_LEFT_MOUSE_DOWN | K_CG_EVENT_RIGHT_MOUSE_DOWN | K_CG_EVENT_OTHER_MOUSE_DOWN => {
@@ -286,16 +281,6 @@ unsafe extern "C" fn tap_callback(
         }
         _ => event,
     }
-}
-
-fn park_cursor() {
-    let point = CGPoint {
-        x: PARK_X.load(Ordering::Relaxed) as f64,
-        y: PARK_Y.load(Ordering::Relaxed) as f64,
-    };
-    WARPING.store(true, Ordering::SeqCst);
-    unsafe { CGWarpMouseCursorPosition(point) };
-    WARPING.store(false, Ordering::SeqCst);
 }
 
 fn button_for(event_type: u32) -> MouseButton {

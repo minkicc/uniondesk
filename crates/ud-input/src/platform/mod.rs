@@ -42,15 +42,12 @@ pub struct CaptureOptions {
     pub mouse: bool,
     /// Swallow and report key presses.
     pub keyboard: bool,
-    /// Keep the local cursor pinned here so it cannot wander while a peer owns it.
-    pub park_at: Option<Point>,
 }
 
 impl CaptureOptions {
     pub const OFF: CaptureOptions = CaptureOptions {
         mouse: false,
         keyboard: false,
-        park_at: None,
     };
 
     pub fn is_off(&self) -> bool {
