@@ -7,7 +7,7 @@
 //! interferes with ordinary use.
 
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::OnceLock;
 
@@ -38,6 +38,8 @@ static WARPING: AtomicBool = AtomicBool::new(false);
 static BUTTONS: AtomicU8 = AtomicU8::new(0);
 static TAP: AtomicUsize = AtomicUsize::new(0);
 static SOURCE: AtomicUsize = AtomicUsize::new(0);
+static FIRST_DELTA_LOGGED: AtomicBool = AtomicBool::new(false);
+static DELTAS_EMITTED: AtomicU64 = AtomicU64::new(0);
 
 pub fn run(
     commands: Receiver<Command>,
@@ -137,6 +139,11 @@ fn ensure_tap() -> Result<CFMachPortRef, InputError> {
         )
     };
     if tap.is_null() {
+        tracing::warn!(
+            "CGEventTapCreate refused to create the tap; Accessibility and Input \
+             Monitoring are both required, and the application has to be restarted \
+             after either one is granted"
+        );
         return Err(InputError::Unsupported(
             "the operating system refused to create an event tap. Check that \
              Accessibility and Input Monitoring are both granted."
@@ -152,6 +159,7 @@ fn ensure_tap() -> Result<CFMachPortRef, InputError> {
         CGEventTapEnable(tap, false);
     }
     TAP.store(tap as usize, Ordering::SeqCst);
+    tracing::info!("event tap created");
     Ok(tap)
 }
 
@@ -219,6 +227,10 @@ unsafe extern "C" fn tap_callback(
             let dx = CGEventGetIntegerValueField(event, K_CG_MOUSE_EVENT_DELTA_X) as f64;
             let dy = CGEventGetIntegerValueField(event, K_CG_MOUSE_EVENT_DELTA_Y) as f64;
             if dx != 0.0 || dy != 0.0 {
+                if !FIRST_DELTA_LOGGED.swap(true, Ordering::Relaxed) {
+                    tracing::info!(dx, dy, "first movement captured");
+                }
+                DELTAS_EMITTED.fetch_add(1, Ordering::Relaxed);
                 emit(CapturedEvent::MoveDelta { dx, dy });
             }
             // The move is swallowed, so the local cursor simply stays where it

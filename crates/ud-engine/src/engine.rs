@@ -308,8 +308,14 @@ struct Engine {
     settle_until: Option<Instant>,
     /// Whether the current handover has already reported its first relayed event.
     relay_logged: bool,
+    /// Whether this session has already reported input arriving from a peer.
+    inject_logged: bool,
+    /// Counted so a failing injection is reported without flooding the log.
+    inject_errors: u64,
     /// A live description of any permission the platform is still waiting for.
     permission_hint: Option<String>,
+    /// Throttles the "pushed at an edge but nothing happened" explanation.
+    edge_log_at: Option<Instant>,
     listening_port: u16,
     capture_active: bool,
     clipboard_status: ClipboardStatusView,
@@ -356,7 +362,10 @@ impl Engine {
             last_scroll_lock: None,
             settle_until: None,
             relay_logged: false,
+            inject_logged: false,
+            inject_errors: 0,
             permission_hint: None,
+            edge_log_at: None,
             listening_port: 0,
             capture_active: false,
             clipboard_status: ClipboardStatusView {
@@ -1308,6 +1317,12 @@ impl Engine {
                         }),
                     )
                     .await;
+                    info!(
+                        %peer,
+                        x = position.x,
+                        y = position.y,
+                        "our cursor reached the returning edge, handing control back"
+                    );
                     self.release_held_input().await;
                     self.control = ControlState::Local;
                     self.notify(Notice::info("Control returned to this machine."));
@@ -1320,29 +1335,74 @@ impl Engine {
     async fn try_engage(&mut self, position: Point, delta: (f64, f64)) {
         let tolerance = self.settings.input.edge_armed_pixels.max(1.0);
         let mut candidate: Option<(EdgeLink, PlacedPeer, Point)> = None;
+        let mut blocked: Option<(Side, String)> = None;
         for link in self.settings.links.iter().filter(|l| l.enabled) {
-            let Some(session) = self.sessions.get(&link.peer) else {
-                continue;
-            };
-            if !session.state.is_connected() {
-                continue;
-            }
             let side = link.local_side;
             if !hits_edge(self.desktop, side, position, tolerance)
                 || !is_outward(side, delta.0, delta.1)
             {
                 continue;
             }
-            let peer_desktop = desktop_bounds(&session.displays);
-            let placed = place_peer(self.desktop, peer_desktop, link);
-            let entry = entry_point(&placed, position);
-            candidate = Some((link.clone(), placed, entry));
-            break;
+            // The cursor is being pushed at a configured edge. Either we hand
+            // over, or we say why we cannot: a machine that silently does
+            // nothing is the hardest kind of bug to report.
+            match self.sessions.get(&link.peer) {
+                None => {
+                    blocked = Some((side, format!("{} is not connected", link.peer_name)));
+                    break;
+                }
+                Some(session) if !session.state.is_connected() => {
+                    blocked = Some((
+                        side,
+                        format!("the connection to {} is {}", link.peer_name, session.state.label()),
+                    ));
+                    break;
+                }
+                Some(session) => {
+                    let peer_desktop = desktop_bounds(&session.displays);
+                    let placed = place_peer(self.desktop, peer_desktop, link);
+                    let entry = entry_point(&placed, position);
+                    candidate = Some((link.clone(), placed, entry));
+                    break;
+                }
+            }
         }
 
         let Some((link, placed, entry)) = candidate else {
+            if let Some((side, reason)) = blocked {
+                let due = self
+                    .edge_log_at
+                    .map(|last| Instant::now().duration_since(last) >= Duration::from_secs(3))
+                    .unwrap_or(true);
+                if due {
+                    self.edge_log_at = Some(Instant::now());
+                    warn!(
+                        edge = side.label(),
+                        %reason,
+                        "cursor is pushed at a configured edge but no handover can happen"
+                    );
+                }
+            }
             return;
         };
+
+        // Refuse up front when the platform has already told us it cannot
+        // capture. Trying anyway produces a handover that starts and dies within
+        // milliseconds, which reads as "the mouse does not come over" and gives
+        // the user nothing to act on.
+        if let Some(hint) = self.permission_hint.clone() {
+            let due = self
+                .edge_log_at
+                .map(|last| Instant::now().duration_since(last) >= Duration::from_secs(3))
+                .unwrap_or(true);
+            if due {
+                self.edge_log_at = Some(Instant::now());
+                warn!(%hint, "refusing to take control because a permission is missing");
+                self.notify(Notice::warning(hint));
+            }
+            return;
+        }
+
         let keyboard = self.settings.input.relay_keyboard;
         if let Some(input) = &self.input {
             if let Err(err) = input.set_capture(CaptureOptions {
@@ -1403,7 +1463,9 @@ impl Engine {
             self.control = previous;
             return;
         };
-        debug!(reason, "releasing control");
+        // Info rather than debug: this line explains why a handover ended, and
+        // it is the first thing worth reading when one misbehaves.
+        info!(reason, "releasing control");
         if let Some(input) = &self.input {
             let _ = input.release_capture();
             let _ = input.warp(return_point(&placed, peer_cursor));
@@ -1466,6 +1528,7 @@ impl Engine {
 
     async fn on_captured(&mut self, event: CapturedEvent) {
         if let CapturedEvent::CaptureLost { reason } = &event {
+            warn!(%reason, "the platform stopped capturing input");
             self.notify(Notice::error(format!("Input capture stopped: {reason}")));
             self.release_control("capture was lost").await;
             return;
@@ -1582,7 +1645,21 @@ impl Engine {
         }
         let Some(input) = &self.input else { return };
         if let Err(err) = input.inject(&event) {
-            trace!(%peer, error = %err, "could not inject a remote event");
+            // Warn loudly the first time and then occasionally: an injection
+            // failure means the peer is driving a machine that is not moving,
+            // which is exactly the symptom worth chasing.
+            self.inject_errors += 1;
+            if self.inject_errors == 1 || self.inject_errors % 200 == 0 {
+                warn!(
+                    %peer,
+                    failures = self.inject_errors,
+                    error = %err,
+                    "could not inject a remote event"
+                );
+            }
+        } else if !self.inject_logged {
+            self.inject_logged = true;
+            info!(%peer, "receiving input from the peer");
         }
     }
 
@@ -2091,6 +2168,10 @@ impl Engine {
         if self.discovery_dirty {
             self.rebuild_discovery().await;
         }
+        // Permission grants can change while the application is running, and on
+        // macOS they only take effect after a restart, so keep the reported
+        // state honest rather than frozen at startup.
+        self.permission_hint = ud_input::permission_status();
         self.table.prune(90);
 
         let now = Instant::now();

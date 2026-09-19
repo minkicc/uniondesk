@@ -9,9 +9,13 @@ use crate::config::EdgeLink;
 use crate::geom::{Point, Rect, Side};
 use crate::identity::DeviceId;
 
-/// Inset used when dropping the cursor just inside the far edge so that it does
-/// not immediately trigger a crossing back.
-const INSET: f64 = 2.0;
+/// Inset used when dropping the cursor inside the far edge.
+///
+/// This has to be comfortably larger than the edge detection tolerance used when
+/// handing control back. With the two the same size, a cursor that has just
+/// arrived sits exactly on the threshold that returns it home, and a single
+/// jittered sample of movement in the wrong direction undoes the handover.
+const INSET: f64 = 12.0;
 
 /// A peer desktop placed in this machine's coordinate space.
 #[derive(Debug, Clone, PartialEq)]
@@ -176,8 +180,10 @@ mod tests {
         let placed = place_peer(local(), peer_desktop(), &link);
         let entry = entry_point(&placed, Point::new(1919.0, 540.0));
         assert!((entry.y - 720.0).abs() < 1.0, "entry was {entry:?}");
-        // Peer local coordinates: just inside the peer's own left edge.
-        assert!((entry.x - 2.0).abs() < 0.001, "entry was {entry:?}");
+        // Peer local coordinates: inside the peer's own left edge, far enough in
+        // that arriving does not immediately register as leaving again.
+        assert!((entry.x - INSET).abs() < 0.001, "entry was {entry:?}");
+        assert!(INSET > 2.0, "the inset must exceed the edge tolerance");
     }
 
     #[test]
@@ -186,7 +192,7 @@ mod tests {
         let placed = place_peer(local(), peer_desktop(), &link);
         let entry = entry_point(&placed, Point::new(1919.0, 270.0));
         let back = return_point(&placed, entry);
-        assert!((back.x - 1918.0).abs() < 0.001);
+        assert!((back.x - (1920.0 - INSET)).abs() < 0.001, "back was {back:?}");
         assert!((back.y - 270.0).abs() < 1.0, "back was {back:?}");
     }
 

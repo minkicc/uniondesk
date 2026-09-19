@@ -109,3 +109,68 @@ pub fn permission_status() -> Option<String> {
 pub fn permission_hint() -> Option<String> {
     permission_status()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ud_core::input::MouseButton;
+
+    /// Moves the real cursor, so it is ignored by default. Run it by hand with
+    /// `cargo test -p ud-input -- --ignored --nocapture`.
+    ///
+    /// This is the only way to check that injection actually reaches the
+    /// operating system. Every other test can pass while the machine quietly
+    /// refuses to move, which is exactly the failure that is hardest to notice
+    /// and hardest to report.
+    #[test]
+    #[ignore]
+    fn injection_and_warp_reach_the_operating_system() {
+        let (controller, _events) = InputController::start().expect("input backend");
+        let start = controller.cursor_position().expect("cursor position");
+        println!("start: {start:?}");
+
+        // Relative movement goes through the system's pointer acceleration, so
+        // the cursor travels further than the raw delta. Check the direction and
+        // the order of magnitude, not an exact distance.
+        let relative = controller
+            .inject(&InputEvent::MoveRel { dx: 40.0, dy: 25.0 })
+            .map_err(|err| err.to_string());
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let moved = controller.cursor_position().expect("cursor position");
+        println!("after relative move: {moved:?}");
+        let dx = moved.x - start.x;
+        let dy = moved.y - start.y;
+
+        let absolute = controller
+            .inject(&InputEvent::MoveAbs { x: 300.0, y: 260.0 })
+            .map_err(|err| err.to_string());
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let warped = controller.cursor_position().expect("cursor position");
+        println!("after absolute move: {warped:?}");
+
+        // A button press must not leave anything held down.
+        let _ = controller.inject(&InputEvent::Button {
+            button: MouseButton::Left,
+            down: true,
+        });
+        let _ = controller.inject(&InputEvent::Button {
+            button: MouseButton::Left,
+            down: false,
+        });
+
+        // Put the cursor back before reporting, so a failure does not leave the
+        // machine somewhere unexpected.
+        let _ = controller.warp(start);
+
+        relative.expect("relative move");
+        absolute.expect("absolute move");
+        assert!(
+            dx >= 24.0 && dy >= 15.0,
+            "relative movement did not reach the cursor: moved by ({dx}, {dy})"
+        );
+        assert!(
+            (warped.x - 300.0).abs() <= 2.0 && (warped.y - 260.0).abs() <= 2.0,
+            "absolute movement did not reach the cursor: {warped:?}"
+        );
+    }
+}
