@@ -1278,6 +1278,7 @@ impl Engine {
         if self.discovery_dirty {
             self.rebuild_discovery().await;
         }
+        self.enforce_capture_invariant();
         let Some(input) = &self.input else { return };
         let Some(position) = input.cursor_position() else {
             return;
@@ -1526,6 +1527,29 @@ impl Engine {
             .unwrap_or(false)
     }
 
+    /// Releases the local capture without telling the peer anything.
+    fn drop_capture(&mut self) {
+        if let Some(input) = &self.input {
+            let _ = input.release_capture();
+        }
+        self.capture_active = false;
+        self.last_cursor = None;
+    }
+
+    /// The hooks swallow the local pointer and hide it, which is only ever
+    /// correct while this machine owns the handover. If a capture outlives its
+    /// handover — a simultaneous takeover from both sides is the obvious way —
+    /// the cursor keeps working but becomes invisible, which reads as "the peer's
+    /// mouse is not moving anything" and is essentially undiagnosable without
+    /// this being written down.
+    fn enforce_capture_invariant(&mut self) {
+        if !self.capture_active || matches!(self.control, ControlState::Controlling { .. }) {
+            return;
+        }
+        warn!("a capture outlived its handover; releasing it so the cursor is visible again");
+        self.drop_capture();
+    }
+
     async fn on_captured(&mut self, event: CapturedEvent) {
         if let CapturedEvent::CaptureLost { reason } = &event {
             warn!(%reason, "the platform stopped capturing input");
@@ -1671,6 +1695,23 @@ impl Engine {
                 return_side,
                 keyboard,
             } => {
+                // Both machines can decide to take control at almost the same
+                // moment, and both handovers are then already in flight. Resolve
+                // it the way duplicate connections are resolved, by device id,
+                // so the two sides always reach the same conclusion.
+                if matches!(self.control, ControlState::Controlling { .. }) {
+                    if self.identity.device_id < peer {
+                        info!(
+                            %peer,
+                            "ignoring a simultaneous takeover; this machine keeps control"
+                        );
+                        return;
+                    }
+                    info!(%peer, "yielding a simultaneous takeover to the peer");
+                    // Let go of the hooks without telling the peer, because the
+                    // peer is taking over rather than letting go.
+                    self.drop_capture();
+                }
                 if let Some(input) = &self.input {
                     let _ = input.warp(Point::new(x, y));
                 }
