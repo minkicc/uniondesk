@@ -98,17 +98,14 @@ pub const fn input_relay_supported() -> bool {
     cfg!(any(target_os = "windows", target_os = "macos"))
 }
 
-/// Permission hint shown in the UI when the platform needs an explicit grant.
-pub fn permission_hint() -> Option<&'static str> {
-    #[cfg(target_os = "macos")]
-    {
-        Some(
-            "macOS requires Accessibility and Input Monitoring permission. \
-             Open System Settings > Privacy & Security and enable UnionDesk for both.",
-        )
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        None
-    }
+/// What the platform still needs from the user, or `None` when nothing is
+/// outstanding. On macOS this is a live check, because the operating system
+/// fails silently rather than reporting an error.
+pub fn permission_status() -> Option<String> {
+    platform::permission_status()
+}
+
+/// Kept for the about box: the message the user would see on this platform.
+pub fn permission_hint() -> Option<String> {
+    permission_status()
 }

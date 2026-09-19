@@ -46,5 +46,9 @@ pub fn inject(_event: &InputEvent) -> Result<(), InputError> {
     ))
 }
 
+pub fn permission_status() -> Option<String> {
+    Some("Keyboard and mouse relaying is not implemented on this platform yet.".into())
+}
+
 #[allow(dead_code)]
 fn unused(_: CaptureOptions) {}

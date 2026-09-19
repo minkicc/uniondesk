@@ -536,6 +536,12 @@ pub fn inject(event: &InputEvent) -> Result<(), InputError> {
     }
 }
 
+/// Windows needs no explicit grant; the firewall prompt is the only thing the
+/// user ever sees, and that is about listening rather than input.
+pub fn permission_status() -> Option<String> {
+    None
+}
+
 fn mouse_input(dx: i32, dy: i32, flags: MOUSE_EVENT_FLAGS, data: u32) -> INPUT {
     INPUT {
         r#type: INPUT_MOUSE,

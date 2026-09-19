@@ -220,7 +220,7 @@ pub fn refresh(state: State<'_, AppState>) -> Result<()> {
 pub fn platform_notes() -> Vec<String> {
     let mut notes = Vec::new();
     if let Some(hint) = ud_input::permission_hint() {
-        notes.push(hint.to_string());
+        notes.push(hint);
     }
     if cfg!(target_os = "windows") {
         notes.push(

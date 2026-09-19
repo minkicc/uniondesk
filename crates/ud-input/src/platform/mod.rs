@@ -125,3 +125,11 @@ pub(crate) fn desktop_bounds() -> Rect {
 pub(crate) fn inject(event: &InputEvent) -> Result<(), InputError> {
     imp::inject(event)
 }
+
+/// What the operating system still needs from the user, if anything. On macOS
+/// both `CGWarpMouseCursorPosition` and `CGEventPost` fail *silently* without
+/// Accessibility, which otherwise looks exactly like a peer that received
+/// nothing.
+pub(crate) fn permission_status() -> Option<String> {
+    imp::permission_status()
+}

@@ -308,6 +308,8 @@ struct Engine {
     settle_until: Option<Instant>,
     /// Whether the current handover has already reported its first relayed event.
     relay_logged: bool,
+    /// A live description of any permission the platform is still waiting for.
+    permission_hint: Option<String>,
     listening_port: u16,
     capture_active: bool,
     clipboard_status: ClipboardStatusView,
@@ -354,6 +356,7 @@ impl Engine {
             last_scroll_lock: None,
             settle_until: None,
             relay_logged: false,
+            permission_hint: None,
             listening_port: 0,
             capture_active: false,
             clipboard_status: ClipboardStatusView {
@@ -400,6 +403,13 @@ impl Engine {
     // ---------------------------------------------------------------- platform
 
     fn start_platform_services(&mut self) {
+        // Checked up front because macOS refuses these calls silently: without
+        // this, a machine missing Accessibility looks exactly like a machine
+        // that is receiving nothing.
+        self.permission_hint = ud_input::permission_status();
+        if let Some(hint) = &self.permission_hint {
+            warn!(%hint, "input permissions are incomplete");
+        }
         match InputController::start() {
             Ok((controller, receiver)) => {
                 self.displays = controller.displays();
@@ -2250,7 +2260,7 @@ impl Engine {
                 backend_available: self.input.is_some(),
                 enabled: self.settings.input.enabled,
                 capture_active: self.capture_active,
-                permission_hint: ud_input::permission_hint().map(str::to_string),
+                permission_hint: self.permission_hint.clone(),
             },
             clipboard: self.clipboard_status.clone(),
             platform: PlatformView {

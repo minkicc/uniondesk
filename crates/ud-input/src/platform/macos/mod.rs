@@ -539,3 +539,31 @@ fn drag_button() -> u32 {
 pub fn permissions_granted() -> (bool, bool) {
     unsafe { (AXIsProcessTrusted(), CGPreflightListenEventAccess()) }
 }
+
+/// A message naming the permission that is still missing, if any.
+///
+/// This has to be checked eagerly rather than on failure: macOS refuses the
+/// calls quietly, so a peer with the wrong permission looks identical to a peer
+/// that never received anything.
+pub fn permission_status() -> Option<String> {
+    let (accessibility, input_monitoring) = permissions_granted();
+    match (accessibility, input_monitoring) {
+        (true, true) => None,
+        (false, false) => Some(
+            "macOS needs two permissions before it will let UnionDesk move the cursor or \
+             read the keyboard: System Settings > Privacy & Security > Accessibility, and \
+             Input Monitoring. Turn UnionDesk on in both, then restart it."
+                .into(),
+        ),
+        (false, true) => Some(
+            "macOS needs Accessibility permission before UnionDesk can move the cursor or \
+             send keystrokes here: System Settings > Privacy & Security > Accessibility."
+                .into(),
+        ),
+        (true, false) => Some(
+            "macOS needs Input Monitoring permission before UnionDesk can read the keyboard \
+             and mouse here: System Settings > Privacy & Security > Input Monitoring."
+                .into(),
+        ),
+    }
+}
