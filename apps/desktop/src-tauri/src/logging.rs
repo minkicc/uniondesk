@@ -76,7 +76,19 @@ impl Write for LogGuard {
 /// console, so the file is the only place a problem can be looked up after the
 /// fact; leaving it empty because of an unrelated `RUST_LOG` in the environment
 /// would make the application undiagnosable.
-const APP_TARGETS: [&str; 5] = ["uniondesk_lib", "ud_engine", "ud_net", "ud_input", "ud_clipboard"];
+/// Level each of our own crates records at by default.
+///
+/// `ud_engine` and `ud_net` are at debug because their debug records are the
+/// connection and handover lifecycle: why a session ended, which side dialled,
+/// whether a session replaced an existing one. Those are the questions worth
+/// being able to answer after the fact, and they are cheap.
+const APP_TARGETS: [(&str, &str); 5] = [
+    ("uniondesk_lib", "info"),
+    ("ud_engine", "debug"),
+    ("ud_net", "debug"),
+    ("ud_input", "info"),
+    ("ud_clipboard", "info"),
+];
 
 /// Builds the filter from `RUST_LOG` when it says something about UnionDesk, and
 /// otherwise keeps the application's own records at info while the rest of the
@@ -85,7 +97,7 @@ fn build_filter() -> tracing_subscriber::EnvFilter {
     let from_env = std::env::var("RUST_LOG").ok();
     let mentions_app = from_env
         .as_deref()
-        .map(|value| APP_TARGETS.iter().any(|target| value.contains(target)))
+        .map(|value| APP_TARGETS.iter().any(|(target, _)| value.contains(target)))
         .unwrap_or(false);
 
     let base = match &from_env {
@@ -101,7 +113,7 @@ fn build_filter() -> tracing_subscriber::EnvFilter {
 fn app_directives() -> String {
     APP_TARGETS
         .iter()
-        .map(|target| format!("{target}=info"))
+        .map(|(target, level)| format!("{target}={level}"))
         .collect::<Vec<_>>()
         .join(",")
 }

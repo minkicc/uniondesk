@@ -892,6 +892,14 @@ impl Engine {
         } else {
             ConnectionState::Pairing
         };
+        let replaced = self.sessions.contains_key(&peer);
+        info!(
+            peer = %info.name,
+            initiator = connection.initiator,
+            trusted,
+            replaced,
+            "session established"
+        );
         if let Some(previous) = self.sessions.insert(
             peer.clone(),
             Session {
@@ -955,7 +963,14 @@ impl Engine {
         let Some(session) = self.sessions.remove(peer) else {
             return;
         };
-        debug!(peer = %session.info.name, reason, "session ended");
+        // Info rather than debug: a session ending explains a handover that
+        // stopped working, and it is the first thing to look for.
+        info!(
+            peer = %session.info.name,
+            reason,
+            initiator = session.connection.initiator,
+            "session ended"
+        );
         self.connecting.remove(peer);
         if matches!(&self.control, ControlState::Controlling { peer: active, .. } if active == peer) {
             self.release_control("the peer went away").await;

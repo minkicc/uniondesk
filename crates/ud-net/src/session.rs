@@ -267,6 +267,8 @@ async fn reader_loop(
         if let Err(err) = read_result {
             if !cancel.is_cancelled() {
                 debug!(peer = %peer, error = %err, "peer connection ended");
+            } else {
+                debug!(peer = %peer, "connection closed locally");
             }
             break;
         }

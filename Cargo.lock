@@ -4395,7 +4395,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "ud-clipboard"
-version = "0.1.7"
+version = "0.1.9"
 dependencies = [
  "arboard",
  "png 0.17.16",
@@ -4409,7 +4409,7 @@ dependencies = [
 
 [[package]]
 name = "ud-core"
-version = "0.1.7"
+version = "0.1.9"
 dependencies = [
  "base64 0.22.1",
  "dirs",
@@ -4427,7 +4427,7 @@ dependencies = [
 
 [[package]]
 name = "ud-engine"
-version = "0.1.7"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4449,7 +4449,7 @@ dependencies = [
 
 [[package]]
 name = "ud-input"
-version = "0.1.7"
+version = "0.1.9"
 dependencies = [
  "parking_lot",
  "serde",
@@ -4462,7 +4462,7 @@ dependencies = [
 
 [[package]]
 name = "ud-net"
-version = "0.1.7"
+version = "0.1.9"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -4537,7 +4537,7 @@ checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "uniondesk"
-version = "0.1.7"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "dirs",
