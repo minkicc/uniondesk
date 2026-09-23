@@ -74,6 +74,8 @@ static MOUSE_HOOK_CALLS: AtomicU64 = AtomicU64::new(0);
 static KEY_HOOK_CALLS: AtomicU64 = AtomicU64::new(0);
 static DELTAS_EMITTED: AtomicU64 = AtomicU64::new(0);
 static FIRST_DELTA_LOGGED: AtomicBool = AtomicBool::new(false);
+/// Whether the cursor shape is currently ours to restore.
+static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
 
 /// `[keyboard hook, mouse hook]`, stored as integers so the static stays `Sync`.
 static HOOKS: parking_lot::Mutex<[isize; 2]> = parking_lot::Mutex::new([0, 0]);
@@ -123,6 +125,14 @@ unsafe fn pump(commands: Receiver<Command>) {
                 // owns it. Some applications reset the cursor shape when they
                 // see activity, so put it back out of sight periodically.
                 let _ = SetCursor(None);
+                CURSOR_HIDDEN.store(true, Ordering::SeqCst);
+            } else if CURSOR_HIDDEN.load(Ordering::SeqCst) {
+                // Capturing is over but the cursor is still hidden. Restoring it
+                // here rather than only on the release path means a missed or
+                // reordered release cannot leave the user with an invisible
+                // pointer; the worst case is ten milliseconds.
+                tracing::warn!("restoring a cursor that outlived its capture");
+                show_system_cursor(true);
             }
             if drain(&commands) {
                 break;
@@ -211,8 +221,10 @@ unsafe fn show_system_cursor(visible: bool) {
         if let Ok(arrow) = LoadCursorW(None, IDC_ARROW) {
             let _ = SetCursor(Some(arrow));
         }
+        CURSOR_HIDDEN.store(false, Ordering::SeqCst);
     } else {
         let _ = SetCursor(None);
+        CURSOR_HIDDEN.store(true, Ordering::SeqCst);
     }
 }
 

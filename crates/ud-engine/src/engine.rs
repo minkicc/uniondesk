@@ -316,6 +316,8 @@ struct Engine {
     permission_hint: Option<String>,
     /// Throttles the "pushed at an edge but nothing happened" explanation.
     edge_log_at: Option<Instant>,
+    /// Throttles the "a peer is driving a machine that is not being driven".
+    mismatch_log_at: Option<Instant>,
     listening_port: u16,
     capture_active: bool,
     clipboard_status: ClipboardStatusView,
@@ -366,6 +368,7 @@ impl Engine {
             inject_errors: 0,
             permission_hint: None,
             edge_log_at: None,
+            mismatch_log_at: None,
             listening_port: 0,
             capture_active: false,
             clipboard_status: ClipboardStatusView {
@@ -1543,11 +1546,27 @@ impl Engine {
     /// mouse is not moving anything" and is essentially undiagnosable without
     /// this being written down.
     fn enforce_capture_invariant(&mut self) {
-        if !self.capture_active || matches!(self.control, ControlState::Controlling { .. }) {
+        // Capturing the keyboard and mouse is only ever correct while this
+        // machine owns the handover. Anything else leaves the local pointer
+        // swallowed and hidden, which reads as "the peer's mouse does nothing".
+        // Rather than trusting the two to stay in step, reconcile them.
+        let should_capture = matches!(self.control, ControlState::Controlling { .. });
+        if self.capture_active == should_capture {
             return;
         }
-        warn!("a capture outlived its handover; releasing it so the cursor is visible again");
-        self.drop_capture();
+        if should_capture {
+            warn!("control is active without a capture; taking the input back");
+            if let Some(input) = &self.input {
+                let _ = input.set_capture(CaptureOptions {
+                    mouse: true,
+                    keyboard: self.settings.input.relay_keyboard,
+                });
+            }
+        } else {
+            warn!("a capture outlived its handover; releasing it so the cursor is visible again");
+            self.drop_capture();
+        }
+        self.capture_active = should_capture;
     }
 
     async fn on_captured(&mut self, event: CapturedEvent) {
@@ -1643,7 +1662,27 @@ impl Engine {
     async fn on_remote_input(&mut self, event: InputEvent) {
         let (peer, keys_allowed) = match &self.control {
             ControlState::Controlled { peer, keyboard, .. } => (peer.clone(), *keyboard),
-            _ => return,
+            other => {
+                // A peer is driving a machine that does not believe it is being
+                // driven. The events are dropped, so say why once rather than
+                // producing a cursor that does not move and no explanation.
+                let mode = match other {
+                    ControlState::Local => "local",
+                    _ => "controlling a peer",
+                };
+                let due = self
+                    .mismatch_log_at
+                    .map(|last| last.elapsed() >= Duration::from_secs(3))
+                    .unwrap_or(true);
+                if due {
+                    self.mismatch_log_at = Some(Instant::now());
+                    warn!(
+                        mode,
+                        "a peer is sending input while this machine is {mode}; dropping it"
+                    );
+                }
+                return;
+            }
         };
         // The controllers can decline to relay keys, in which case the local
         // keyboard stays ours even while the pointer is borrowed.
@@ -1741,6 +1780,7 @@ impl Engine {
                 }
                 self.last_cursor = None;
                 self.control = ControlState::Local;
+                info!(%peer, x, y, "the peer let go of this machine");
                 self.publish().await;
             }
             InputControl::ReturnHome { x, y } => self.on_return_home(peer, Point::new(x, y)).await,
