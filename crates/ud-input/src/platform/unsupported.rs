@@ -52,5 +52,7 @@ pub fn permission_status() -> Option<String> {
 
 pub fn request_permissions() {}
 
+pub fn open_permission_settings() {}
+
 #[allow(dead_code)]
 fn unused(_: CaptureOptions) {}

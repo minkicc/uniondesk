@@ -118,6 +118,12 @@ pub fn request_permissions() {
     platform::request_permissions()
 }
 
+/// Opens the operating system settings pane that holds a permission this
+/// application is still waiting for. Does nothing where no permission is needed.
+pub fn open_permission_settings() {
+    platform::open_permission_settings()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

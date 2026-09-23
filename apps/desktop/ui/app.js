@@ -605,7 +605,19 @@ function renderPermission(snapshot) {
   const callout = el("permission-callout");
   const hint = snapshot.input.permission_hint;
   callout.classList.toggle("visible", Boolean(hint));
-  if (hint) callout.textContent = hint;
+  if (!hint) {
+    callout.replaceChildren();
+    return;
+  }
+  if (callout.dataset.hint === hint) return;
+  callout.dataset.hint = hint;
+  callout.replaceChildren();
+  callout.append(node("span", "callout-text", hint));
+  callout.append(
+    button("Open System Settings", "button button-quiet", () =>
+      call("open_permission_settings"),
+    ),
+  );
 }
 
 // --------------------------------------------------------------- wiring up

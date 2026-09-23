@@ -682,3 +682,33 @@ pub fn request_permissions() {
         }
     }
 }
+
+/// Opens the System Settings pane that holds the permission this application is
+/// still waiting for.
+///
+/// macOS offers each dialog once per launch and never again once the user has
+/// answered it, so being able to jump straight to the right switch is the
+/// difference between a problem the user can fix and one they have to hunt for.
+pub fn open_permission_settings() {
+    #[cfg(target_os = "macos")]
+    {
+        let (accessibility, input_monitoring) = permissions_granted();
+        let anchor = if !accessibility {
+            "Privacy_Accessibility"
+        } else if !input_monitoring {
+            "Privacy_ListenEvent"
+        } else {
+            return;
+        };
+        let url = format!("x-apple.systempreferences:com.apple.preference.security?{anchor}");
+        tracing::info!(%url, "opening System Settings");
+        if let Err(err) = std::process::Command::new("open").arg(&url).spawn() {
+            tracing::warn!(%url, error = %err, "could not open System Settings");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Nothing to open; the type check simply needs the function to exist.
+        let _ = permissions_granted();
+    }
+}

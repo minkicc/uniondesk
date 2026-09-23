@@ -138,3 +138,8 @@ pub(crate) fn permission_status() -> Option<String> {
 pub(crate) fn request_permissions() {
     imp::request_permissions()
 }
+
+/// Opens whatever settings pane holds a permission this application still needs.
+pub(crate) fn open_permission_settings() {
+    imp::open_permission_settings()
+}

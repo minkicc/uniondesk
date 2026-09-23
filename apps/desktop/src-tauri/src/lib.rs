@@ -94,6 +94,7 @@ pub fn run() {
             commands::take_pending_drop,
             commands::refresh,
             commands::platform_notes,
+            commands::open_permission_settings,
         ]);
 
     let app = builder

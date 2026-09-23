@@ -545,6 +545,9 @@ pub fn permission_status() -> Option<String> {
 /// Windows has nothing to ask for at start up.
 pub fn request_permissions() {}
 
+/// Nothing to open: Windows grants input access to a normal user process.
+pub fn open_permission_settings() {}
+
 fn mouse_input(dx: i32, dy: i32, flags: MOUSE_EVENT_FLAGS, data: u32) -> INPUT {
     INPUT {
         r#type: INPUT_MOUSE,

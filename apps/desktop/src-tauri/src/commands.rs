@@ -215,6 +215,15 @@ pub fn refresh(state: State<'_, AppState>) -> Result<()> {
     state.engine.refresh().map_err(|err| err.to_string())
 }
 
+/// Asks for any outstanding permission again and opens the settings pane that
+/// holds it. macOS only offers each dialog once per launch, so the second part
+/// is what actually helps when the switch has to be flipped by hand.
+#[tauri::command]
+pub fn open_permission_settings() {
+    ud_input::request_permissions();
+    ud_input::open_permission_settings();
+}
+
 /// Platform specific notes the UI shows in the settings panel.
 #[tauri::command]
 pub fn platform_notes() -> Vec<String> {
