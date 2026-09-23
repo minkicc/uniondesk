@@ -327,12 +327,27 @@ async fn mdns_loop(
                 let Some(device_id) = info.get_property_val_str("id") else {
                     continue;
                 };
-                let addresses: Vec<IpAddr> = info
+                // Prefer IPv4, which is what the connection actually uses. A
+                // set that mixes in IPv6 records which arrive, expire and
+                // reorder looks different on every resolution even though the
+                // machine has not moved, which defeats the change detection
+                // below.
+                let mut addresses: Vec<IpAddr> = info
                     .get_addresses()
                     .iter()
                     .copied()
-                    .filter(|a| !a.is_loopback())
+                    .filter(|a| a.is_ipv4() && !a.is_loopback())
                     .collect();
+                if addresses.is_empty() {
+                    addresses = info
+                        .get_addresses()
+                        .iter()
+                        .copied()
+                        .filter(|a| !a.is_loopback())
+                        .collect();
+                }
+                addresses.sort();
+                addresses.dedup();
                 if addresses.is_empty() {
                     continue;
                 }
@@ -354,10 +369,18 @@ async fn mdns_loop(
                     .map(|(addresses, name, at)| {
                         *addresses == found.addresses
                             && *name == found.name
-                            && at.elapsed() < Duration::from_secs(30)
+                            && at.elapsed() < Duration::from_secs(300)
                     })
                     .unwrap_or(false);
-                if unchanged {
+                // Any sighting that is not a change is dropped, and even a real
+                // change is not worth forwarding more than once every few
+                // seconds: the only consumer is a device list, and the chatter
+                // otherwise reaches the UI as a redraw.
+                let too_soon = seen
+                    .get(&found.device_id)
+                    .map(|(_, _, at)| at.elapsed() < Duration::from_secs(5))
+                    .unwrap_or(false);
+                if unchanged || too_soon {
                     continue;
                 }
                 seen.insert(
