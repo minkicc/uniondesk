@@ -19,6 +19,7 @@ pub type CFStringRef = *const c_void;
 pub type CFAllocatorRef = *const c_void;
 pub type CFTypeRef = *const c_void;
 pub type CFDictionaryRef = *const c_void;
+pub type CFBooleanRef = *const c_void;
 pub type CGDirectDisplayID = u32;
 
 #[repr(C)]
@@ -172,6 +173,35 @@ extern "C" {
     pub static kCFRunLoopDefaultMode: CFStringRef;
     pub static kCFRunLoopCommonModes: CFStringRef;
 }
+
+// Just enough CoreFoundation to build the options dictionary the Accessibility
+// prompt wants. Written by hand rather than through a wrapper crate so that the
+// whole macOS backend still compiles on a non-Apple host, where the wrapper does
+// not build and the code would otherwise be invisible to the cross host type
+// check.
+#[cfg_attr(target_vendor = "apple", link(name = "CoreFoundation", kind = "framework"))]
+extern "C" {
+    pub fn CFStringCreateWithCString(
+        allocator: CFAllocatorRef,
+        c_str: *const std::os::raw::c_char,
+        encoding: u32,
+    ) -> CFStringRef;
+    pub fn CFDictionaryCreate(
+        allocator: CFAllocatorRef,
+        keys: *const CFTypeRef,
+        values: *const CFTypeRef,
+        num_values: isize,
+        key_callbacks: *const c_void,
+        value_callbacks: *const c_void,
+    ) -> CFDictionaryRef;
+    /// Opaque: only the address is ever used.
+    pub static kCFTypeDictionaryKeyCallBacks: u8;
+    pub static kCFTypeDictionaryValueCallBacks: u8;
+    pub static kCFBooleanTrue: CFBooleanRef;
+}
+
+/// `kCFStringEncodingUTF8`.
+pub const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
 
 #[cfg_attr(target_vendor = "apple", link(name = "CoreGraphics", kind = "framework"))]
 extern "C" {

@@ -51,7 +51,21 @@ jobs:
           workspaces: ". -> target"
 
       - name: Tests
-        run: cargo test --workspace
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --workspace 2>&1 | tee test-output.txt
+
+      # Actions logs need a signed-in account to read. Keeping the output as an
+      # artefact means a failure can be inspected by anyone, which matters when
+      # the person who can fix it is not the person who can log in.
+      - name: Keep the test output when something fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-log-${{ matrix.target }}
+          path: test-output.txt
+          if-no-files-found: ignore
 
       # To ship signed and notarised macOS builds, add these repository secrets
       # and uncomment the env block. Without them the bundles are unsigned and

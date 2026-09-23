@@ -4451,7 +4451,6 @@ dependencies = [
 name = "ud-input"
 version = "0.1.6"
 dependencies = [
- "core-foundation",
  "parking_lot",
  "serde",
  "thiserror 2.0.20",

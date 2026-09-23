@@ -14,17 +14,6 @@ use std::sync::OnceLock;
 use tokio::sync::mpsc::UnboundedSender;
 use ud_core::geom::{DisplayInfo, Point, Rect};
 use ud_core::input::{InputEvent, Modifiers, MouseButton};
-// `core-foundation` only builds on Apple targets, so the request below is
-// compiled out during the cross host type check. The macOS CI job compiles it
-// for real.
-#[cfg(target_os = "macos")]
-use core_foundation::base::TCFType;
-#[cfg(target_os = "macos")]
-use core_foundation::boolean::CFBoolean;
-#[cfg(target_os = "macos")]
-use core_foundation::dictionary::CFDictionary;
-#[cfg(target_os = "macos")]
-use core_foundation::string::CFString;
 
 use super::{CaptureOptions, Command};
 use crate::event::CapturedEvent;
@@ -661,26 +650,50 @@ pub fn permission_status() -> Option<String> {
 pub fn request_permissions() {
     let (accessibility, input_monitoring) = permissions_granted();
 
-    #[cfg(target_os = "macos")]
     if !accessibility {
-        // The key is compared by value, so the literal string is equivalent to
-        // importing kAXTrustedCheckOptionPrompt.
-        let key = CFString::from_static_string("AXTrustedCheckOptionPrompt");
-        let options = CFDictionary::from_CFType_pairs(&[(key, CFBoolean::true_value())]);
         tracing::info!("asking macOS for Accessibility permission");
         unsafe {
-            AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef());
+            let options = accessibility_prompt_options();
+            AXIsProcessTrustedWithOptions(options);
+            if !options.is_null() {
+                CFRelease(options as CFTypeRef);
+            }
         }
     }
-    #[cfg(not(target_os = "macos"))]
-    let _ = accessibility;
-
     if !input_monitoring {
         tracing::info!("asking macOS for Input Monitoring permission");
         unsafe {
             CGRequestListenEventAccess();
         }
     }
+}
+
+/// `{ AXTrustedCheckOptionPrompt: true }`, which turns the check into a prompt
+/// offering to open the Accessibility pane.
+unsafe fn accessibility_prompt_options() -> CFDictionaryRef {
+    // The key is compared by value, so the literal string is equivalent to
+    // importing kAXTrustedCheckOptionPrompt.
+    let key = CFStringCreateWithCString(
+        std::ptr::null(),
+        c"AXTrustedCheckOptionPrompt".as_ptr(),
+        K_CF_STRING_ENCODING_UTF8,
+    );
+    if key.is_null() {
+        return std::ptr::null();
+    }
+    let keys = [key as CFTypeRef];
+    let values = [kCFBooleanTrue as CFTypeRef];
+    let options = CFDictionaryCreate(
+        std::ptr::null(),
+        keys.as_ptr(),
+        values.as_ptr(),
+        1,
+        std::ptr::addr_of!(kCFTypeDictionaryKeyCallBacks) as *const c_void,
+        std::ptr::addr_of!(kCFTypeDictionaryValueCallBacks) as *const c_void,
+    );
+    // The dictionary retains the key, so the local reference can go.
+    CFRelease(key as CFTypeRef);
+    options
 }
 
 /// Opens the System Settings pane that holds the permission this application is
@@ -690,25 +703,18 @@ pub fn request_permissions() {
 /// answered it, so being able to jump straight to the right switch is the
 /// difference between a problem the user can fix and one they have to hunt for.
 pub fn open_permission_settings() {
+    let (accessibility, input_monitoring) = permissions_granted();
+    let anchor = if !accessibility {
+        "Privacy_Accessibility"
+    } else if !input_monitoring {
+        "Privacy_ListenEvent"
+    } else {
+        return;
+    };
+    let url = format!("x-apple.systempreferences:com.apple.preference.security?{anchor}");
+    tracing::info!(%url, "opening System Settings");
     #[cfg(target_os = "macos")]
-    {
-        let (accessibility, input_monitoring) = permissions_granted();
-        let anchor = if !accessibility {
-            "Privacy_Accessibility"
-        } else if !input_monitoring {
-            "Privacy_ListenEvent"
-        } else {
-            return;
-        };
-        let url = format!("x-apple.systempreferences:com.apple.preference.security?{anchor}");
-        tracing::info!(%url, "opening System Settings");
-        if let Err(err) = std::process::Command::new("open").arg(&url).spawn() {
-            tracing::warn!(%url, error = %err, "could not open System Settings");
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        // Nothing to open; the type check simply needs the function to exist.
-        let _ = permissions_granted();
+    if let Err(err) = std::process::Command::new("open").arg(&url).spawn() {
+        tracing::warn!(%url, error = %err, "could not open System Settings");
     }
 }

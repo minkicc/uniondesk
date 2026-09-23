@@ -32,7 +32,18 @@ jobs:
           workspaces: ". -> target"
 
       - name: Unit and integration tests
-        run: cargo test --workspace
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --workspace 2>&1 | tee test-output.txt
+
+      - name: Keep the test output when something fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-log-${{ matrix.os }}
+          path: test-output.txt
+          if-no-files-found: ignore
 
       # The macOS input backend can be type checked from any host, which is what
       # keeps it from rotting on a Windows-only machine.
