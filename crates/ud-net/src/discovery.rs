@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
@@ -309,6 +309,12 @@ async fn mdns_loop(
     events: mpsc::Sender<DiscoveryEvent>,
     cancel: CancellationToken,
 ) {
+    // The resolver re-resolves a service every time the network answers, which
+    // on a busy network means many events a second for a machine that has not
+    // changed at all. Everything downstream reacts to a Found event — the peer
+    // table, a snapshot, a UI redraw — so only forward an actual change, and at
+    // most a refresh every so often even then.
+    let mut seen: HashMap<DeviceId, (Vec<IpAddr>, String, Instant)> = HashMap::new();
     loop {
         let event = tokio::select! {
             biased;
@@ -343,6 +349,25 @@ async fn mdns_loop(
                     source: DiscoverSource::Mdns,
                     last_seen: ud_core::now_unix(),
                 };
+                let unchanged = seen
+                    .get(&found.device_id)
+                    .map(|(addresses, name, at)| {
+                        *addresses == found.addresses
+                            && *name == found.name
+                            && at.elapsed() < Duration::from_secs(30)
+                    })
+                    .unwrap_or(false);
+                if unchanged {
+                    continue;
+                }
+                seen.insert(
+                    found.device_id.clone(),
+                    (
+                        found.addresses.clone(),
+                        found.name.clone(),
+                        Instant::now(),
+                    ),
+                );
                 debug!(peer = %found.name, "multicast DNS");
                 let _ = events.send(DiscoveryEvent::Found(Box::new(found))).await;
             }

@@ -394,8 +394,11 @@ impl Engine {
 
         let mut commands = commands;
         loop {
+            // Deliberately not `biased`: a flood of inbound events — discovery
+            // chatter is the obvious one — must not be able to starve the ticks
+            // that drive edge detection, handover return and the capture
+            // invariant. Tokio's default is a fair random order.
             tokio::select! {
-                biased;
                 maybe = commands.recv() => {
                     let Some(event) = maybe else { break };
                     if !self.handle(event).await {
@@ -2237,7 +2240,9 @@ impl Engine {
                 if found.device_id == self.identity.device_id {
                     return;
                 }
-                self.table.upsert(found.clone());
+                // Only a real change is worth a snapshot: the UI redraws on
+                // every one, and discovery is chatty by nature.
+                let changed = self.table.upsert(found.clone());
                 let trusted = self
                     .peers
                     .get(&found.device_id)
@@ -2250,7 +2255,9 @@ impl Engine {
                     // sides never connect to each other at the same moment.
                     self.connect_peer(&found.device_id);
                 }
-                self.publish().await;
+                if changed {
+                    self.publish().await;
+                }
             }
             DiscoveryEvent::Lost(id) => {
                 if self.table.remove(&id) {
