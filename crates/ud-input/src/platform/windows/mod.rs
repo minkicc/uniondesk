@@ -542,6 +542,9 @@ pub fn permission_status() -> Option<String> {
     None
 }
 
+/// Windows has nothing to ask for at start up.
+pub fn request_permissions() {}
+
 fn mouse_input(dx: i32, dy: i32, flags: MOUSE_EVENT_FLAGS, data: u32) -> INPUT {
     INPUT {
         r#type: INPUT_MOUSE,

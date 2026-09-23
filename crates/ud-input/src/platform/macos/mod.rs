@@ -14,6 +14,17 @@ use std::sync::OnceLock;
 use tokio::sync::mpsc::UnboundedSender;
 use ud_core::geom::{DisplayInfo, Point, Rect};
 use ud_core::input::{InputEvent, Modifiers, MouseButton};
+// `core-foundation` only builds on Apple targets, so the request below is
+// compiled out during the cross host type check. The macOS CI job compiles it
+// for real.
+#[cfg(target_os = "macos")]
+use core_foundation::base::TCFType;
+#[cfg(target_os = "macos")]
+use core_foundation::boolean::CFBoolean;
+#[cfg(target_os = "macos")]
+use core_foundation::dictionary::CFDictionary;
+#[cfg(target_os = "macos")]
+use core_foundation::string::CFString;
 
 use super::{CaptureOptions, Command};
 use crate::event::CapturedEvent;
@@ -638,5 +649,36 @@ pub fn permission_status() -> Option<String> {
              and mouse here: System Settings > Privacy & Security > Input Monitoring."
                 .into(),
         ),
+    }
+}
+
+/// Asks macOS to prompt for whatever is still missing.
+///
+/// Accessibility has to be requested explicitly, with the prompt option set, or
+/// the user is never offered it. Input Monitoring has its own request call.
+/// Both dialogs are only shown once per process, so calling this at start up is
+/// enough.
+pub fn request_permissions() {
+    let (accessibility, input_monitoring) = permissions_granted();
+
+    #[cfg(target_os = "macos")]
+    if !accessibility {
+        // The key is compared by value, so the literal string is equivalent to
+        // importing kAXTrustedCheckOptionPrompt.
+        let key = CFString::from_static_string("AXTrustedCheckOptionPrompt");
+        let options = CFDictionary::from_CFType_pairs(&[(key, CFBoolean::true_value())]);
+        tracing::info!("asking macOS for Accessibility permission");
+        unsafe {
+            AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef());
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = accessibility;
+
+    if !input_monitoring {
+        tracing::info!("asking macOS for Input Monitoring permission");
+        unsafe {
+            CGRequestListenEventAccess();
+        }
     }
 }

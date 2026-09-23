@@ -110,6 +110,14 @@ pub fn permission_hint() -> Option<String> {
     permission_status()
 }
 
+/// Asks the operating system to prompt for any permission it is still waiting
+/// for. On macOS the Accessibility dialog never appears unless the application
+/// explicitly asks, so without this the user is only ever told that a switch
+/// somewhere is off. Call it once, from the main thread.
+pub fn request_permissions() {
+    platform::request_permissions()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

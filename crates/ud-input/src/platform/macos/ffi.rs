@@ -18,6 +18,7 @@ pub type CFRunLoopSourceRef = *mut c_void;
 pub type CFStringRef = *const c_void;
 pub type CFAllocatorRef = *const c_void;
 pub type CFTypeRef = *const c_void;
+pub type CFDictionaryRef = *const c_void;
 pub type CGDirectDisplayID = u32;
 
 #[repr(C)]
@@ -183,4 +184,12 @@ extern "C" {
 extern "C" {
     /// Accessibility permission, required to post synthetic events.
     pub fn AXIsProcessTrusted() -> bool;
+
+    /// Same check, but with the option to make macOS show the dialog that
+    /// offers to open the right pane of System Settings.
+    ///
+    /// The operating system never asks for Accessibility on its own; an
+    /// application that needs it has to ask, and without this the user is left
+    /// with a message telling them to go and find a switch.
+    pub fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> bool;
 }

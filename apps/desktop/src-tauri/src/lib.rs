@@ -32,6 +32,10 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // macOS only shows the Accessibility dialog when the application
+            // asks for it, and this hook runs on the main thread, which is where
+            // a system prompt belongs.
+            ud_input::request_permissions();
             let options = EngineOptions::discover();
             // The engine is a Tokio actor, so it has to be created from inside
             // a runtime; Tauri's setup hook is not one.

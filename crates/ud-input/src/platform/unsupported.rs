@@ -50,5 +50,7 @@ pub fn permission_status() -> Option<String> {
     Some("Keyboard and mouse relaying is not implemented on this platform yet.".into())
 }
 
+pub fn request_permissions() {}
+
 #[allow(dead_code)]
 fn unused(_: CaptureOptions) {}

@@ -133,3 +133,8 @@ pub(crate) fn inject(event: &InputEvent) -> Result<(), InputError> {
 pub(crate) fn permission_status() -> Option<String> {
     imp::permission_status()
 }
+
+/// Asks the operating system to prompt for anything still outstanding.
+pub(crate) fn request_permissions() {
+    imp::request_permissions()
+}

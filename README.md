@@ -66,14 +66,33 @@ application builds with Cargo alone.
 ### macOS notes
 
 macOS will not let any application move the pointer or read the keyboard until
-you grant it, under **System Settings → Privacy & Security**:
+you grant it. These are **two separate lists** under
+**System Settings → Privacy & Security**, and adding UnionDesk to one does not
+add it to the other:
 
-- **Accessibility** — required to post synthetic events.
-- **Input Monitoring** — required to observe the real keyboard and mouse.
+- **Accessibility** — required to move the pointer and send keystrokes, which is
+  what being controlled needs.
+- **Input Monitoring** — required to observe the real keyboard and mouse, which
+  is what controlling another machine needs.
 
-UnionDesk prompts for Input Monitoring the first time sharing is switched on, and
-the app shows the same reminder in the Devices tab. macOS delivers no error when
-a tap is created without permission, so the app checks before it tries.
+UnionDesk asks for both at start up, and names whichever one is still missing in
+the Devices tab and in its log. macOS delivers no error at all when a tap is
+created without permission, so the app checks before it tries.
+
+Because the builds are not signed with a Developer ID, macOS identifies them by a
+hash of the binary. **Replacing the application invalidates both grants**, and
+the entries in System Settings can look enabled while doing nothing. After an
+update, or whenever a permission is reported missing that you believe you
+granted, clear the stale entries and grant them again:
+
+```sh
+tccutil reset Accessibility dev.uniondesk.desktop
+tccutil reset ListenEvent dev.uniondesk.desktop
+```
+
+Then quit and reopen UnionDesk. Signing the bundle with a Developer ID removes
+this step entirely, and is what the commented-out secrets in
+`.github/workflows/release.yml` are for.
 
 For distribution you will also want to sign and notarise the bundle; the
 `bundle.macOS` section of `tauri.conf.json` is where those settings go.
